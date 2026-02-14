@@ -1,0 +1,73 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            triplet: x64-windows
+            vcpkg-root: C:\vcpkg
+          - os: ubuntu-latest
+            triplet: x64-linux
+            vcpkg-root: /usr/local/share/vcpkg
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      VCPKG_ROOT: ${{ matrix.vcpkg-root }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Vulkan SDK (Windows) ──────────────────────────────────────────
+      - name: Install Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ver = "1.4.313.0"
+          $installer = "$env:RUNNER_TEMP\vulkan-sdk.exe"
+          Invoke-WebRequest `
+            -Uri "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanSDK-$ver-Installer.exe" `
+            -OutFile $installer
+          Start-Process -FilePath $installer `
+            -ArgumentList "--accept-licenses --default-answer --confirm-command install" `
+            -Wait -NoNewWindow
+          $sdkPath = "C:\VulkanSDK\$ver"
+          echo "VULKAN_SDK=$sdkPath"           >> $env:GITHUB_ENV
+          echo "$sdkPath\Bin"                  >> $env:GITHUB_PATH
+
+      # ── Vulkan SDK (Linux) ────────────────────────────────────────────
+      - name: Install Vulkan SDK (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc >/dev/null
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list \
+            https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
+          sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
+
+      # ── vcpkg cache ──────────────────────────────────────────────────
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ matrix.vcpkg-root }}/installed
+          key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ matrix.os }}-
+
+      # ── Build ─────────────────────────────────────────────────────────
+      - name: CMake configure
+        run: >
+          cmake -B build -S .
+          -DCMAKE_TOOLCHAIN_FILE=${{ matrix.vcpkg-root }}/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+
+      - name: CMake build
+        run: cmake --build build
