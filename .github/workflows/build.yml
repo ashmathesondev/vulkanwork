@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
 
 jobs:
@@ -31,10 +31,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $ver = "1.4.313.0"
+          $ver = "1.4.341.1"
           $installer = "$env:RUNNER_TEMP\vulkan-sdk.exe"
           Invoke-WebRequest `
-            -Uri "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanSDK-$ver-Installer.exe" `
+            -Uri "https://sdk.lunarg.com/sdk/download/$ver/windows/vulkan_sdk.exe" `
             -OutFile $installer
           Start-Process -FilePath $installer `
             -ArgumentList "--accept-licenses --default-answer --confirm-command install" `
@@ -43,8 +43,8 @@ jobs:
           echo "VULKAN_SDK=$sdkPath"           >> $env:GITHUB_ENV
           echo "$sdkPath\Bin"                  >> $env:GITHUB_PATH
 
-      # ── Vulkan SDK (Linux) ────────────────────────────────────────────
-      - name: Install Vulkan SDK (Linux)
+      # ── Vulkan SDK + dev headers (Linux) ──────────────────────────────
+      - name: Install Vulkan SDK and dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
@@ -52,13 +52,15 @@ jobs:
           sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list \
             https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
           sudo apt-get update
-          sudo apt-get install -y vulkan-sdk
+          sudo apt-get install -y vulkan-sdk \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            pkg-config
 
       # ── vcpkg cache ──────────────────────────────────────────────────
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         with:
-          path: ${{ matrix.vcpkg-root }}/installed
+          path: build/vcpkg_installed
           key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-${{ matrix.os }}-
 
