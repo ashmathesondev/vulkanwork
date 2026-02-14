@@ -1,0 +1,14 @@
+{
+  "name": "vulkanwork",
+  "version": "0.1.0",
+  "dependencies": [
+    "vulkan-headers",
+    "vulkan-loader",
+    "glfw3",
+    "glm",
+    {
+      "name": "imgui",
+      "features": ["glfw-binding", "vulkan-binding"]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+build/
+.vs/
+.vscode/
+.cache/
+.claude/
+CMakeUserPresets.json
+imgui.ini
+*.exe
+*.obj
+*.pdb
+*.ilk
