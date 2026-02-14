@@ -34,7 +34,7 @@ jobs:
           $ver = "1.4.341.1"
           $installer = "$env:RUNNER_TEMP\vulkan-sdk.exe"
           Invoke-WebRequest `
-            -Uri "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanSDK-$ver-Installer.exe" `
+            -Uri "https://sdk.lunarg.com/sdk/download/$ver/windows/vulkan_sdk.exe" `
             -OutFile $installer
           Start-Process -FilePath $installer `
             -ArgumentList "--accept-licenses --default-answer --confirm-command install" `
