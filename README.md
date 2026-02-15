@@ -42,11 +42,13 @@ make run
 | Target | Description |
 |---|---|
 | `make build` | Configure (if needed) and build |
+| `make build VS=22` | Build targeting Visual Studio 2022 (`vs22/`) |
+| `make build VS=26` | Build targeting Visual Studio 2026 (`vs26/`) |
 | `make run` | Build and run |
 | `make clean` | Clean build artifacts |
 | `make rebuild` | Clean then build |
-| `make vs22` | Generate a Visual Studio 2022 solution in `vs22/` |
-| `make vs26` | Generate a Visual Studio 2026 solution in `vs26/` |
+
+All targets accept the optional `VS=22` or `VS=26` argument to use a Visual Studio generator.
 
 ## Opening in Visual Studio
 
@@ -56,8 +58,6 @@ make run
 ```
 
 This will generate the solution if needed (or regenerate if files are missing) and launch VS.
-=======
-| `make vs26` | Generate a Visual Studio 2026 solution in `vs26/` |
 
 ## Project Structure
 

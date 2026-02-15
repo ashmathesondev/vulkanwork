@@ -1,21 +1,15 @@
 param(
-    [Parameter(Mandatory)]
     [ValidateSet("2022", "2026")]
     [string]$t
 )
 
 $ErrorActionPreference = "Stop"
 
-# Version configuration: folder, make target, vswhere version range
+# Version configuration: folder, VS= value for make, vswhere version range
 $versions = @{
-    "2022" = @{ Folder = "vs22"; Target = "vs22"; VersionRange = "[17.0,18.0)" }
-    "2026" = @{ Folder = "vs26"; Target = "vs26"; VersionRange = "[18.0,19.0)" }
+    "2022" = @{ Folder = "vs22"; MakeVS = "22"; VersionRange = "[17.0,18.0)" }
+    "2026" = @{ Folder = "vs26"; MakeVS = "26"; VersionRange = "[18.0,19.0)" }
 }
-
-$config = $versions[$t]
-$folder = $config.Folder
-$target = $config.Target
-$versionRange = $config.VersionRange
 
 # Locate vswhere
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -24,24 +18,67 @@ if (-not (Test-Path $vswhere)) {
     exit 1
 }
 
-# Find VS Professional devenv.exe
-$devenv = & $vswhere -version $versionRange `
-    -products Microsoft.VisualStudio.Product.Professional `
-    -requires Microsoft.Component.MSBuild `
-    -property productPath `
-    -latest
-if (-not $devenv) {
-    Write-Error "Visual Studio $t Professional is not installed."
-    exit 1
+# Products in priority order (prefer Professional over Community)
+$productPriority = @(
+    "Microsoft.VisualStudio.Product.Enterprise",
+    "Microsoft.VisualStudio.Product.Professional",
+    "Microsoft.VisualStudio.Product.Community"
+)
+
+function Find-VS($versionArg) {
+    foreach ($product in $productPriority) {
+        $vsArgs = @("-products", $product, "-requires", "Microsoft.Component.MSBuild", "-latest", "-prerelease")
+        if ($versionArg) { $vsArgs = @("-version", $versionArg) + $vsArgs }
+
+        $path = & $vswhere @vsArgs -property productPath
+        if ($path) {
+            $name = & $vswhere @vsArgs -property displayName
+            $ver  = & $vswhere @vsArgs -property installationVersion
+            return @{ DevEnv = $path; DisplayName = $name; Version = $ver }
+        }
+    }
+    return $null
 }
 
-Write-Host "Found Visual Studio $t at: $devenv"
+if (-not $t) {
+    # Auto-detect the best installed VS
+    $vs = Find-VS $null
+    if (-not $vs) {
+        Write-Error "No Visual Studio installation found."
+        exit 1
+    }
 
-# Check for .sln and .vcxproj in the build folder
-$sln = Join-Path $folder "vulkanwork.sln"
+    $major = ($vs.Version -split '\.')[0]
+    switch ($major) {
+        "17" { $t = "2022" }
+        "18" { $t = "2026" }
+        default { Write-Error "Detected VS major version $major but no matching configuration."; exit 1 }
+    }
+
+    Write-Host "Auto-detected $($vs.DisplayName)"
+} else {
+    $config = $versions[$t]
+    $vs = Find-VS $config.VersionRange
+    if (-not $vs) {
+        Write-Error "Visual Studio $t is not installed."
+        exit 1
+    }
+
+    Write-Host "Found $($vs.DisplayName)"
+}
+
+$devenv = $vs.DevEnv
+$config = $versions[$t]
+$folder = $config.Folder
+$makeVS = $config.MakeVS
+
+Write-Host "Using: $devenv"
+
+# Check for solution (.sln or .slnx) and .vcxproj in the build folder
+$sln = Get-ChildItem -Path $folder -Filter "vulkanwork.sln*" -ErrorAction SilentlyContinue | Select-Object -First 1
 $vcxproj = Get-ChildItem -Path $folder -Filter "*.vcxproj" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
 
-if (-not (Test-Path $sln) -or -not $vcxproj) {
+if (-not $sln -or -not $vcxproj) {
     Write-Host "Solution files not found in '$folder'. Generating..."
 
     if (Test-Path $folder) {
@@ -49,12 +86,15 @@ if (-not (Test-Path $sln) -or -not $vcxproj) {
         Remove-Item -Recurse -Force $folder
     }
 
-    make $target
+    make build "VS=$makeVS"
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Failed to generate Visual Studio $t project (make $target)."
+        Write-Error "Failed to generate Visual Studio $t project (make build VS=$makeVS)."
         exit 1
     }
+
+    $sln = Get-ChildItem -Path $folder -Filter "vulkanwork.sln*" -ErrorAction SilentlyContinue | Select-Object -First 1
 }
 
-Write-Host "Opening $sln in Visual Studio $t..."
-& $devenv $sln
+$slnPath = $sln.FullName
+Write-Host "Opening $slnPath in Visual Studio $t..."
+& $devenv $slnPath
