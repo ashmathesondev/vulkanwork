@@ -7,8 +7,8 @@ $ErrorActionPreference = "Stop"
 
 # Version configuration: folder, VS= value for make, vswhere version range
 $versions = @{
-    "2022" = @{ Folder = "vs22"; MakeVS = "22"; VersionRange = "[17.0,18.0)" }
-    "2026" = @{ Folder = "vs26"; MakeVS = "26"; VersionRange = "[18.0,19.0)" }
+    "2022" = @{ Folder = "build/vs22"; MakeVS = "22"; VersionRange = "[17.0,18.0)" }
+    "2026" = @{ Folder = "build/vs26"; MakeVS = "26"; VersionRange = "[18.0,19.0)" }
 }
 
 # Locate vswhere

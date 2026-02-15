@@ -41,9 +41,9 @@ make run
 
 | Target | Description |
 |---|---|
-| `make build` | Configure (if needed) and build |
-| `make build VS=22` | Build targeting Visual Studio 2022 (`vs22/`) |
-| `make build VS=26` | Build targeting Visual Studio 2026 (`vs26/`) |
+| `make build` | Configure (if needed) and build to `build/generic/` |
+| `make build VS=22` | Build targeting Visual Studio 2022 (`build/vs22/`) |
+| `make build VS=26` | Build targeting Visual Studio 2026 (`build/vs26/`) |
 | `make run` | Build and run |
 | `make clean` | Clean build artifacts |
 | `make rebuild` | Clean then build |
@@ -53,18 +53,24 @@ All targets accept the optional `VS=22` or `VS=26` argument to use a Visual Stud
 ## Opening in Visual Studio
 
 ```powershell
-.\startvs.ps1 -t 2026   # Visual Studio 2026 Professional
-.\startvs.ps1 -t 2022   # Visual Studio 2022 Professional
+.\startvs.ps1            # Auto-detect the best installed VS
+.\startvs.ps1 -t 2026   # Visual Studio 2026
+.\startvs.ps1 -t 2022   # Visual Studio 2022
 ```
 
-This will generate the solution if needed (or regenerate if files are missing) and launch VS.
+This will generate the solution if needed (or regenerate if files are missing) and launch VS. When multiple editions are installed, the script prefers Enterprise > Professional > Community.
 
 ## Project Structure
 
 ```
 ├── CMakeLists.txt          CMake build configuration
 ├── Makefile                Convenience build driver
+├── startvs.ps1             Launch project in Visual Studio
 ├── vcpkg.json              vcpkg package manifest
+├── build/
+│   ├── generic/            Default build output
+│   ├── vs22/               Visual Studio 2022 build output
+│   └── vs26/               Visual Studio 2026 build output
 ├── shaders/
 │   ├── cube.vert           Vertex shader (MVP transform)
 │   └── cube.frag           Fragment shader (vertex colours)
