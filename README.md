@@ -56,6 +56,8 @@ make run
 ```
 
 This will generate the solution if needed (or regenerate if files are missing) and launch VS.
+=======
+| `make vs26` | Generate a Visual Studio 2026 solution in `vs26/` |
 
 ## Project Structure
 
