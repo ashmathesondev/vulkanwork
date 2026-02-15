@@ -45,6 +45,17 @@ make run
 | `make run` | Build and run |
 | `make clean` | Clean build artifacts |
 | `make rebuild` | Clean then build |
+| `make vs22` | Generate a Visual Studio 2022 solution in `vs22/` |
+| `make vs26` | Generate a Visual Studio 2026 solution in `vs26/` |
+
+## Opening in Visual Studio
+
+```powershell
+.\startvs.ps1 -t 2026   # Visual Studio 2026 Professional
+.\startvs.ps1 -t 2022   # Visual Studio 2022 Professional
+```
+
+This will generate the solution if needed (or regenerate if files are missing) and launch VS.
 
 ## Project Structure
 
