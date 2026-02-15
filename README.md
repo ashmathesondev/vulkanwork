@@ -45,6 +45,7 @@ make run
 | `make run` | Build and run |
 | `make clean` | Clean build artifacts |
 | `make rebuild` | Clean then build |
+| `make vs26` | Generate a Visual Studio 2026 solution in `vs26/` |
 
 ## Project Structure
 
