@@ -3,6 +3,8 @@
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
 
+#include <string>
+
 #include "camera.h"
 #include "debugWindow.h"
 #include "renderer.h"
@@ -32,6 +34,9 @@ struct App
 	Camera camera;
 	float deltaTime = 0.0f;
 	float lastFrameTime = 0.0f;
+
+	// Model path
+	std::string modelPath;
 
 	// --- Public API ----------------------------------------------------------
 	void run();

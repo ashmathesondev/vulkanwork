@@ -56,7 +56,7 @@ void App::init_window()
 
 void App::init_vulkan()
 {
-	renderer.init(window);
+	renderer.init(window, modelPath);
 	init_imgui();
 }
 
