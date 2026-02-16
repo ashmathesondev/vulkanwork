@@ -51,6 +51,8 @@ configure_file(src/config.h.in ${CMAKE_BINARY_DIR}/generated/config.h @ONLY)
 add_executable(vulkanwork
     src/main.cpp
     src/app.cpp
+    src/camera.cpp
+    src/renderer.cpp
 )
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT vulkanwork)
