@@ -1,24 +1,23 @@
 # Auto-detect text files and normalize line endings
 * text=auto
-
 # Source code
 *.cpp text
 *.h text
 *.hpp text
 *.c text
 *.in text
-
 # Build / config
 *.cmake text
 *.json text
 *.txt text
 Makefile text
-
 # Shaders
 *.vert text
 *.frag text
 *.comp text
 *.glsl text
-
 # SPIR-V binaries
 *.spv binary
+*.glb filter=lfs diff=lfs merge=lfs -text
+*.tif filter=lfs diff=lfs merge=lfs -text
+*.png filter=lfs diff=lfs merge=lfs -text
