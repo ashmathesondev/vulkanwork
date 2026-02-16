@@ -10,6 +10,7 @@ find_package(Vulkan REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
+find_package(Stb REQUIRED)
 
 # --- Shader compilation ------------------------------------------------------
 if(Vulkan_GLSLC_EXECUTABLE)
@@ -43,6 +44,7 @@ add_custom_target(shaders DEPENDS ${SPV_OUTPUTS})
 
 # --- Configure shader path ---------------------------------------------------
 set(SHADER_OUTPUT_PATH "${SHADER_BIN_DIR}")
+set(TEXTURE_PATH "${CMAKE_SOURCE_DIR}/textures")
 configure_file(src/config.h.in ${CMAKE_BINARY_DIR}/generated/config.h @ONLY)
 
 # --- Executable --------------------------------------------------------------
@@ -58,6 +60,7 @@ add_dependencies(vulkanwork shaders)
 target_include_directories(vulkanwork PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}/generated
+    ${Stb_INCLUDE_DIR}
 )
 
 target_link_libraries(vulkanwork PRIVATE

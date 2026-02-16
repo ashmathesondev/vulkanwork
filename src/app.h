@@ -53,6 +53,12 @@ struct App {
     VkCommandPool                commandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> commandBuffers;
 
+    // Texture
+    VkImage        textureImage       = VK_NULL_HANDLE;
+    VkDeviceMemory textureImageMemory = VK_NULL_HANDLE;
+    VkImageView    textureImageView   = VK_NULL_HANDLE;
+    VkSampler      textureSampler     = VK_NULL_HANDLE;
+
     // Geometry buffers
     VkBuffer       vertexBuffer       = VK_NULL_HANDLE;
     VkDeviceMemory vertexBufferMemory = VK_NULL_HANDLE;
@@ -109,6 +115,9 @@ private:
     void create_depth_resources();
     void create_framebuffers();
     void create_command_pool();
+    void create_texture_image();
+    void create_texture_image_view();
+    void create_texture_sampler();
     void create_vertex_buffer();
     void create_index_buffer();
     void create_uniform_buffers();
@@ -133,6 +142,10 @@ private:
                                   VkMemoryPropertyFlags props,
                                   VkBuffer& buffer, VkDeviceMemory& memory);
     void            copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size);
+    void            transition_image_layout(VkImage image, VkImageLayout oldLayout,
+                                            VkImageLayout newLayout);
+    void            copy_buffer_to_image(VkBuffer buffer, VkImage image,
+                                         uint32_t width, uint32_t height);
     VkCommandBuffer begin_single_time_commands();
     void            end_single_time_commands(VkCommandBuffer cmd);
     VkImageView     create_image_view(VkImage image, VkFormat format,
