@@ -10,6 +10,7 @@
       "name": "imgui",
       "features": ["glfw-binding", "vulkan-binding"]
     },
-    "stb"
+    "stb",
+    "lz4"
   ]
 }

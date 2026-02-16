@@ -14,7 +14,6 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -123,16 +122,6 @@ static const std::vector<uint16_t> CUBE_INDICES = {
 // Utility helpers
 // =============================================================================
 
-static std::vector<char> read_file(const std::string& path) {
-    std::ifstream f(path, std::ios::ate | std::ios::binary);
-    if (!f.is_open()) throw std::runtime_error("Cannot open file: " + path);
-    size_t sz = static_cast<size_t>(f.tellg());
-    std::vector<char> buf(sz);
-    f.seekg(0);
-    f.read(buf.data(), static_cast<std::streamsize>(sz));
-    return buf;
-}
-
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT,
@@ -175,6 +164,7 @@ void Renderer::notify_resize() { framebufferResized_ = true; }
 
 void Renderer::init(GLFWwindow* window) {
     window_ = window;
+    packFile_.emplace(PAK_FILE);
     create_instance();
     setup_debug_messenger();
     create_surface();
@@ -704,8 +694,8 @@ void Renderer::create_descriptor_set_layout() {
 }
 
 void Renderer::create_graphics_pipeline() {
-    auto vertCode = read_file(std::string(SHADER_DIR) + "/cube.vert.spv");
-    auto fragCode = read_file(std::string(SHADER_DIR) + "/cube.frag.spv");
+    auto vertCode = packFile_->read("shaders/cube.vert.spv");
+    auto fragCode = packFile_->read("shaders/cube.frag.spv");
 
     VkShaderModule vertMod = create_shader_module(vertCode);
     VkShaderModule fragMod = create_shader_module(fragCode);
@@ -1062,11 +1052,14 @@ void Renderer::end_single_time_commands(VkCommandBuffer cmd) {
 // =============================================================================
 
 void Renderer::create_texture_image() {
-    std::string path = std::string(TEXTURE_DIR) + "/grids/1024/BlueGrid.png";
+    auto png_data = packFile_->read("textures/grids/1024/BlueGrid.png");
     int texW, texH, texCh;
-    stbi_uc* pixels = stbi_load(path.c_str(), &texW, &texH, &texCh, STBI_rgb_alpha);
+    stbi_uc* pixels = stbi_load_from_memory(
+        reinterpret_cast<const stbi_uc*>(png_data.data()),
+        static_cast<int>(png_data.size()),
+        &texW, &texH, &texCh, STBI_rgb_alpha);
     if (!pixels)
-        throw std::runtime_error("Failed to load texture: " + path);
+        throw std::runtime_error("Failed to decode texture from pack");
 
     VkDeviceSize imageSize = static_cast<VkDeviceSize>(texW) * texH * 4;
 

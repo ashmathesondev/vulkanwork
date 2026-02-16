@@ -17,11 +17,12 @@ make run
 
 ## What the Build Does
 
-1. Installs dependencies via vcpkg (Vulkan, GLFW, GLM, Dear ImGui)
+1. Installs dependencies via vcpkg (Vulkan, GLFW, GLM, Dear ImGui, stb, LZ4)
 2. Configures the CMake project
 3. Compiles shaders to SPIR-V
-4. Builds the executable
-5. Prints a build report with compiler, generator, duration, and executable location
+4. Packs shaders and textures into `assets.pak` (LZ4-compressed)
+5. Builds the executable
+6. Prints a build report with compiler, generator, duration, and executable location
 
 ## Makefile Targets
 

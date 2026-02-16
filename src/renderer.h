@@ -3,6 +3,8 @@
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
 
+#include "packfile.h"
+
 #include <optional>
 #include <vector>
 #include <string>
@@ -44,6 +46,9 @@ struct Renderer {
     VkRenderPass     vk_render_pass() const;
 
 private:
+    // Asset pack
+    std::optional<pak::PackFile> packFile_;
+
     // Window (non-owning)
     GLFWwindow* window_ = nullptr;
 
