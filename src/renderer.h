@@ -4,23 +4,31 @@
 #include <GLFW/glfw3.h>
 
 #include <array>
+#include <glm/glm.hpp>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "material.h"
+#include "mesh.h"
 #include "packfile.h"
+#include "texture.h"
 
 struct Camera;
+
+// =============================================================================
+// Renderer
+// =============================================================================
 
 struct Renderer
 {
 	static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
 	// Lifecycle
-	void init(GLFWwindow* window);
+	void init(GLFWwindow* window, const std::string& modelPath);
 	void cleanup();
 
-	// Per-frame rendering (granular)
+	// Per-frame rendering
 	struct FrameContext
 	{
 		VkCommandBuffer cmd;
@@ -37,8 +45,6 @@ struct Renderer
 	// Accessors for App/ImGui
 	const char* gpu_name() const;
 	VkExtent2D swapchain_extent() const;
-
-	// ImGui needs these for init
 	VkInstance vk_instance() const;
 	VkPhysicalDevice vk_physical_device() const;
 	VkDevice vk_device() const;
@@ -77,11 +83,14 @@ struct Renderer
 	VkDeviceMemory depthMemory_ = VK_NULL_HANDLE;
 	VkImageView depthView_ = VK_NULL_HANDLE;
 
-	// Pipeline
+	// Render pass
 	VkRenderPass renderPass_ = VK_NULL_HANDLE;
-	VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
-	VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
-	VkPipeline graphicsPipeline_ = VK_NULL_HANDLE;
+
+	// PBR pipeline
+	VkDescriptorSetLayout frameSetLayout_ = VK_NULL_HANDLE;
+	VkDescriptorSetLayout materialSetLayout_ = VK_NULL_HANDLE;
+	VkPipelineLayout pbrPipelineLayout_ = VK_NULL_HANDLE;
+	VkPipeline pbrPipeline_ = VK_NULL_HANDLE;
 
 	// Framebuffers
 	std::vector<VkFramebuffer> framebuffers_;
@@ -90,27 +99,35 @@ struct Renderer
 	VkCommandPool commandPool_ = VK_NULL_HANDLE;
 	std::vector<VkCommandBuffer> commandBuffers_;
 
-	// Texture
-	VkImage textureImage_ = VK_NULL_HANDLE;
-	VkDeviceMemory textureImageMemory_ = VK_NULL_HANDLE;
-	VkImageView textureImageView_ = VK_NULL_HANDLE;
-	VkSampler textureSampler_ = VK_NULL_HANDLE;
+	// PBR sampler
+	VkSampler pbrSampler_ = VK_NULL_HANDLE;
 
-	// Geometry buffers
-	VkBuffer vertexBuffer_ = VK_NULL_HANDLE;
-	VkDeviceMemory vertexBufferMemory_ = VK_NULL_HANDLE;
-	VkBuffer indexBuffer_ = VK_NULL_HANDLE;
-	VkDeviceMemory indexBufferMemory_ = VK_NULL_HANDLE;
-	uint32_t indexCount_ = 0;
+	// Default textures
+	Texture defaultWhite_;
+	Texture defaultNormal_;
 
-	// Uniform buffers (per frame-in-flight)
+	// Scene data (unified CPU+GPU)
+	std::vector<Mesh> meshes_;
+	std::vector<Texture> textures_;
+	std::vector<Material> materials_;
+
+	// Frame UBO
+	struct FrameUBO
+	{
+		alignas(16) glm::mat4 view;
+		alignas(16) glm::mat4 proj;
+		alignas(16) glm::vec3 cameraPos;
+		alignas(16) glm::vec3 lightDir;
+		alignas(16) glm::vec3 lightColor;
+	};
 	std::vector<VkBuffer> uniformBuffers_;
 	std::vector<VkDeviceMemory> uniformBuffersMemory_;
 	std::vector<void*> uniformBuffersMapped_;
 
 	// Descriptors
-	VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
-	std::vector<VkDescriptorSet> descriptorSets_;
+	VkDescriptorPool frameDescriptorPool_ = VK_NULL_HANDLE;
+	std::vector<VkDescriptorSet> frameDescriptorSets_;
+	VkDescriptorPool materialDescriptorPool_ = VK_NULL_HANDLE;
 
 	// Sync
 	std::vector<VkSemaphore> imageAvailableSemaphores_;
@@ -122,6 +139,10 @@ struct Renderer
 	bool framebufferResized_ = false;
 	char gpuName_[256] = {};
 
+	// Spinning cube
+	uint32_t cubeMeshIndex_ = 0;
+	uint32_t cubeMaterialIndex_ = 0;
+
 	// Vulkan setup
 	void create_instance();
 	void setup_debug_messenger();
@@ -131,21 +152,33 @@ struct Renderer
 	void create_swapchain();
 	void create_image_views();
 	void create_render_pass();
-	void create_descriptor_set_layout();
-	void create_graphics_pipeline();
 	void create_depth_resources();
 	void create_framebuffers();
 	void create_command_pool();
-	void create_texture_image();
-	void create_texture_image_view();
-	void create_texture_sampler();
-	void create_vertex_buffer();
-	void create_index_buffer();
-	void create_uniform_buffers();
-	void create_descriptor_pool();
-	void create_descriptor_sets();
 	void create_command_buffers();
 	void create_sync_objects();
+
+	// PBR setup
+	void create_pbr_descriptor_layouts();
+	void create_pbr_pipeline();
+	void create_pbr_sampler();
+	void create_default_textures();
+	void create_uniform_buffers();
+	void create_frame_descriptor_pool();
+	void create_frame_descriptor_sets();
+	void load_scene(const std::string& modelPath);
+
+	// Texture upload
+	void upload_texture(Texture& tex);
+	void generate_mipmaps(VkImage image, VkFormat format, uint32_t width,
+						  uint32_t height, uint32_t mipLevels);
+
+	// Mesh upload
+	void upload_mesh(Mesh& mesh);
+
+	// Material descriptors
+	void create_material_descriptor_pool(uint32_t materialCount);
+	void create_material_descriptor(Material& mat);
 
 	// Swapchain management
 	void recreate_swapchain();
@@ -157,17 +190,15 @@ struct Renderer
 					   VkMemoryPropertyFlags props, VkBuffer& buffer,
 					   VkDeviceMemory& memory);
 	void copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size);
-	void transition_image_layout(VkImage image, VkImageLayout oldLayout,
-								 VkImageLayout newLayout);
-	void copy_buffer_to_image(VkBuffer buffer, VkImage image, uint32_t width,
-							  uint32_t height);
 	VkCommandBuffer begin_single_time_commands();
 	void end_single_time_commands(VkCommandBuffer cmd);
 	VkImageView create_image_view(VkImage image, VkFormat format,
-								  VkImageAspectFlags aspect);
+								  VkImageAspectFlags aspect,
+								  uint32_t mipLevels = 1);
 	VkFormat find_supported_format(const std::vector<VkFormat>& candidates,
 								   VkImageTiling tiling,
 								   VkFormatFeatureFlags features);
 	VkFormat find_depth_format();
 	VkShaderModule create_shader_module(const std::vector<char>& code);
+	void destroy_texture(Texture& tex);
 };

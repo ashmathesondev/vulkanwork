@@ -12,6 +12,7 @@ find_package(glm CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 find_package(lz4 CONFIG REQUIRED)
+find_path(TINYGLTF_INCLUDE_DIRS "tiny_gltf.h")
 
 # --- Shader compilation ------------------------------------------------------
 if(Vulkan_GLSLC_EXECUTABLE)
@@ -26,6 +27,8 @@ set(SHADER_BIN_DIR  ${CMAKE_BINARY_DIR}/shaders)
 set(SHADERS
     ${SHADER_SRC_DIR}/cube.vert
     ${SHADER_SRC_DIR}/cube.frag
+    ${SHADER_SRC_DIR}/pbr.vert
+    ${SHADER_SRC_DIR}/pbr.frag
 )
 
 foreach(SHADER ${SHADERS})
@@ -47,6 +50,7 @@ add_custom_target(shaders DEPENDS ${SPV_OUTPUTS})
 set(SHADER_OUTPUT_PATH "${SHADER_BIN_DIR}")
 set(TEXTURE_PATH "${CMAKE_SOURCE_DIR}/textures")
 set(PAK_FILE_PATH "${CMAKE_BINARY_DIR}/assets.pak")
+set(MODEL_PATH "${CMAKE_SOURCE_DIR}/models")
 configure_file(src/config.h.in ${CMAKE_BINARY_DIR}/generated/config.h @ONLY)
 
 # --- Executable --------------------------------------------------------------
@@ -56,6 +60,10 @@ add_executable(vulkanwork
     src/camera.cpp
     src/debugWindow.cpp
     src/renderer.cpp
+    src/cube.cpp
+    src/gltfLoader.cpp
+    src/texture.cpp
+    src/material.cpp
 )
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT vulkanwork)
@@ -66,6 +74,7 @@ target_include_directories(vulkanwork PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}/generated
     ${Stb_INCLUDE_DIR}
+    ${TINYGLTF_INCLUDE_DIRS}
 )
 
 target_link_libraries(vulkanwork PRIVATE
@@ -91,6 +100,8 @@ add_custom_command(
     COMMAND pak_packer -o ${CMAKE_BINARY_DIR}/assets.pak
         shaders/cube.vert.spv=${SHADER_BIN_DIR}/cube.vert.spv
         shaders/cube.frag.spv=${SHADER_BIN_DIR}/cube.frag.spv
+        shaders/pbr.vert.spv=${SHADER_BIN_DIR}/pbr.vert.spv
+        shaders/pbr.frag.spv=${SHADER_BIN_DIR}/pbr.frag.spv
         textures/grids/1024/BlueGrid.png=${CMAKE_SOURCE_DIR}/textures/grids/1024/BlueGrid.png
     COMMAND pak_packer -v ${CMAKE_BINARY_DIR}/assets.pak
     DEPENDS shaders pak_packer
