@@ -9,6 +9,8 @@
     {
       "name": "imgui",
       "features": ["glfw-binding", "vulkan-binding"]
-    }
+    },
+    "stb",
+    "lz4"
   ]
 }
