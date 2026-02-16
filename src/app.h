@@ -4,6 +4,7 @@
 #include <vulkan/vulkan.h>
 
 #include "camera.h"
+#include "debugWindow.h"
 #include "renderer.h"
 
 struct App
@@ -19,6 +20,9 @@ struct App
 
 	// ImGui
 	VkDescriptorPool imguiPool = VK_NULL_HANDLE;
+
+	// Debug UI
+	DebugWindow debugWindow;
 
 	// State
 	bool mouseCaptured = false;

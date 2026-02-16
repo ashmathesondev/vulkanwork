@@ -54,6 +54,7 @@ add_executable(vulkanwork
     src/main.cpp
     src/app.cpp
     src/camera.cpp
+    src/debugWindow.cpp
     src/renderer.cpp
 )
 
