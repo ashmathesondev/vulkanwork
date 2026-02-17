@@ -29,6 +29,9 @@ set(SHADERS
     ${SHADER_SRC_DIR}/cube.frag
     ${SHADER_SRC_DIR}/pbr.vert
     ${SHADER_SRC_DIR}/pbr.frag
+    ${SHADER_SRC_DIR}/light_cull.comp
+    ${SHADER_SRC_DIR}/debug_heatmap.vert
+    ${SHADER_SRC_DIR}/debug_heatmap.frag
 )
 
 foreach(SHADER ${SHADERS})
@@ -61,6 +64,7 @@ add_executable(vulkanwork
     src/gltfLoader.cpp
     src/graphics/camera.cpp
     src/graphics/cube.cpp
+    src/graphics/light.cpp
     src/graphics/material.cpp
     src/graphics/renderer.cpp
     src/graphics/texture.cpp
@@ -102,6 +106,9 @@ add_custom_command(
         shaders/cube.frag.spv=${SHADER_BIN_DIR}/cube.frag.spv
         shaders/pbr.vert.spv=${SHADER_BIN_DIR}/pbr.vert.spv
         shaders/pbr.frag.spv=${SHADER_BIN_DIR}/pbr.frag.spv
+        shaders/light_cull.comp.spv=${SHADER_BIN_DIR}/light_cull.comp.spv
+        shaders/debug_heatmap.vert.spv=${SHADER_BIN_DIR}/debug_heatmap.vert.spv
+        shaders/debug_heatmap.frag.spv=${SHADER_BIN_DIR}/debug_heatmap.frag.spv
         textures/grids/1024/BlueGrid.png=${CMAKE_SOURCE_DIR}/textures/grids/1024/BlueGrid.png
     COMMAND pak_packer -v ${CMAKE_BINARY_DIR}/assets.pak
     DEPENDS shaders pak_packer

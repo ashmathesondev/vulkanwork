@@ -7,6 +7,7 @@
 
 #include "debugWindow.h"
 #include "graphics/camera.h"
+#include "graphics/light.h"
 #include "graphics/renderer.h"
 
 struct App
@@ -25,6 +26,9 @@ struct App
 
 	// Debug UI
 	DebugWindow debugWindow;
+
+	// Lights
+	LightEnvironment lights;
 
 	// State
 	bool mouseCaptured = false;

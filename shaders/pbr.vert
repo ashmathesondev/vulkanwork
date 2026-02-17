@@ -1,12 +1,17 @@
 #version 450
 
-// Per-frame UBO (set 0, binding 0)
+// Per-frame UBO (set 0, binding 0) -- Forward+
 layout(set = 0, binding = 0) uniform FrameUBO {
-    mat4 view;
-    mat4 proj;
-    vec3 cameraPos;
-    vec3 lightDir;
-    vec3 lightColor;
+    mat4  view;
+    mat4  proj;
+    mat4  invProj;
+    vec3  cameraPos;
+    uint  lightCount;
+    vec3  ambientColor;
+    uint  tileCountX;
+    uint  tileCountY;
+    uint  screenWidth;
+    uint  screenHeight;
 } frame;
 
 // Per-mesh push constant

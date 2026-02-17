@@ -3,8 +3,9 @@
 #include <vulkan/vulkan.h>
 
 struct Renderer;
+struct LightEnvironment;
 
 struct DebugWindow
 {
-	void draw(const Renderer& renderer);
+	void draw(Renderer& renderer, LightEnvironment& lights);
 };

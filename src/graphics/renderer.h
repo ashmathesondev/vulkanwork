@@ -9,12 +9,21 @@
 #include <string>
 #include <vector>
 
+#include "light.h"
 #include "material.h"
 #include "mesh.h"
 #include "pak/packfile.h"
 #include "texture.h"
 
 struct Camera;
+
+// =============================================================================
+// Forward+ rendering constants
+// =============================================================================
+
+static constexpr uint32_t TILE_SIZE = 16;
+static constexpr uint32_t MAX_LIGHTS_PER_TILE = 256;
+static constexpr uint32_t MAX_LIGHTS = 1024;
 
 // =============================================================================
 // Renderer
@@ -35,7 +44,8 @@ struct Renderer
 		uint32_t imageIndex;
 	};
 	std::optional<FrameContext> begin_frame();
-	void update_uniforms(const Camera& camera, float time);
+	void update_uniforms(const Camera& camera, float time,
+						 const LightEnvironment& lights);
 	void draw_scene(VkCommandBuffer cmd);
 	void end_frame(const FrameContext& ctx);
 
@@ -52,6 +62,9 @@ struct Renderer
 	VkQueue vk_graphics_queue() const;
 	uint32_t swapchain_image_count() const;
 	VkRenderPass vk_render_pass() const;
+
+	// Heatmap toggle (controlled from ImGui)
+	bool showHeatmap_ = false;
 
    private:
 	// Asset pack
@@ -82,15 +95,44 @@ struct Renderer
 	VkImage depthImage_ = VK_NULL_HANDLE;
 	VkDeviceMemory depthMemory_ = VK_NULL_HANDLE;
 	VkImageView depthView_ = VK_NULL_HANDLE;
+	VkSampler depthSampler_ = VK_NULL_HANDLE;
 
-	// Render pass
+	// Render passes
 	VkRenderPass renderPass_ = VK_NULL_HANDLE;
+	VkRenderPass depthOnlyRenderPass_ = VK_NULL_HANDLE;
+
+	// Depth pre-pass
+	VkFramebuffer depthOnlyFramebuffer_ = VK_NULL_HANDLE;
+	VkPipelineLayout depthPrepassPipelineLayout_ = VK_NULL_HANDLE;
+	VkPipeline depthPrepassPipeline_ = VK_NULL_HANDLE;
 
 	// PBR pipeline
 	VkDescriptorSetLayout frameSetLayout_ = VK_NULL_HANDLE;
 	VkDescriptorSetLayout materialSetLayout_ = VK_NULL_HANDLE;
+	VkDescriptorSetLayout lightDataSetLayout_ = VK_NULL_HANDLE;
 	VkPipelineLayout pbrPipelineLayout_ = VK_NULL_HANDLE;
 	VkPipeline pbrPipeline_ = VK_NULL_HANDLE;
+
+	// Light culling compute
+	VkPipelineLayout computePipelineLayout_ = VK_NULL_HANDLE;
+	VkPipeline lightCullPipeline_ = VK_NULL_HANDLE;
+
+	// Heatmap debug overlay
+	VkPipelineLayout heatmapPipelineLayout_ = VK_NULL_HANDLE;
+	VkPipeline heatmapPipeline_ = VK_NULL_HANDLE;
+
+	// Light / tile SSBOs (per frame-in-flight)
+	std::vector<VkBuffer> lightSSBOs_;
+	std::vector<VkDeviceMemory> lightSSBOMemory_;
+	std::vector<void*> lightSSBOMapped_;
+	std::vector<VkBuffer> tileLightSSBOs_;
+	std::vector<VkDeviceMemory> tileLightSSBOMemory_;
+	uint32_t tileCountX_ = 0;
+	uint32_t tileCountY_ = 0;
+
+	// Light data descriptors (per frame-in-flight)
+	VkDescriptorPool lightDescriptorPool_ = VK_NULL_HANDLE;
+	std::vector<VkDescriptorSet> lightDescriptorSets_;
 
 	// Framebuffers
 	std::vector<VkFramebuffer> framebuffers_;
@@ -111,14 +153,19 @@ struct Renderer
 	std::vector<Texture> textures_;
 	std::vector<Material> materials_;
 
-	// Frame UBO
+	// Frame UBO (Forward+)
 	struct FrameUBO
 	{
 		alignas(16) glm::mat4 view;
 		alignas(16) glm::mat4 proj;
+		alignas(16) glm::mat4 invProj;
 		alignas(16) glm::vec3 cameraPos;
-		alignas(16) glm::vec3 lightDir;
-		alignas(16) glm::vec3 lightColor;
+		alignas(4) uint32_t lightCount;
+		alignas(16) glm::vec3 ambientColor;
+		alignas(4) uint32_t tileCountX;
+		alignas(4) uint32_t tileCountY;
+		alignas(4) uint32_t screenWidth;
+		alignas(4) uint32_t screenHeight;
 	};
 	std::vector<VkBuffer> uniformBuffers_;
 	std::vector<VkDeviceMemory> uniformBuffersMemory_;
@@ -168,6 +215,20 @@ struct Renderer
 	void create_frame_descriptor_sets();
 	void load_scene(const std::string& modelPath);
 
+	// Forward+ setup
+	void create_depth_only_render_pass();
+	void create_depth_only_framebuffer();
+	void create_depth_prepass_pipeline();
+	void create_light_data_set_layout();
+	void create_light_buffers();
+	void create_light_descriptor_pool();
+	void create_light_descriptor_sets();
+	void create_compute_pipeline();
+	void create_heatmap_pipeline();
+
+	// Forward+ per-frame
+	void draw_depth_prepass(VkCommandBuffer cmd);
+
 	// Texture upload
 	void upload_texture(Texture& tex);
 	void generate_mipmaps(VkImage image, VkFormat format, uint32_t width,
@@ -201,4 +262,5 @@ struct Renderer
 	VkFormat find_depth_format();
 	VkShaderModule create_shader_module(const std::vector<char>& code);
 	void destroy_texture(Texture& tex);
+	void cleanup_light_buffers();
 };

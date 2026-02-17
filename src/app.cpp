@@ -58,6 +58,16 @@ void App::init_vulkan()
 {
 	renderer.init(window, modelPath);
 	init_imgui();
+
+	// Initialize default lights (matching previous hardcoded directional)
+	DirectionalLight sun;
+	sun.direction = glm::normalize(glm::vec3(0.5f, -1.0f, 0.3f));
+	sun.color = glm::vec3(1.0f);
+	sun.intensity = 3.0f;
+	lights.directionals.push_back(sun);
+
+	lights.ambient.color = glm::vec3(1.0f);
+	lights.ambient.intensity = 0.03f;
 }
 
 void App::main_loop()
@@ -77,7 +87,7 @@ void App::main_loop()
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 
-		debugWindow.draw(renderer);
+		debugWindow.draw(renderer, lights);
 
 		ImGui::Render();
 
@@ -86,7 +96,7 @@ void App::main_loop()
 		if (!frame) continue;  // swapchain was recreated
 
 		float time = static_cast<float>(glfwGetTime());
-		renderer.update_uniforms(camera, time);
+		renderer.update_uniforms(camera, time, lights);
 		renderer.draw_scene(frame->cmd);
 
 		// ImGui draws into the same render pass
