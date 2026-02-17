@@ -2,7 +2,7 @@
 
 #include <imgui.h>
 
-#include "renderer.h"
+#include "graphics/renderer.h"
 
 void DebugWindow::draw(const Renderer& renderer)
 {

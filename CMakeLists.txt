@@ -57,13 +57,13 @@ configure_file(src/config.h.in ${CMAKE_BINARY_DIR}/generated/config.h @ONLY)
 add_executable(vulkanwork
     src/main.cpp
     src/app.cpp
-    src/camera.cpp
     src/debugWindow.cpp
-    src/renderer.cpp
-    src/cube.cpp
     src/gltfLoader.cpp
-    src/texture.cpp
-    src/material.cpp
+    src/graphics/camera.cpp
+    src/graphics/cube.cpp
+    src/graphics/material.cpp
+    src/graphics/renderer.cpp
+    src/graphics/texture.cpp
 )
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT vulkanwork)
@@ -86,7 +86,7 @@ target_link_libraries(vulkanwork PRIVATE
 )
 
 # --- Pack file library -------------------------------------------------------
-add_library(packfile STATIC src/packfile.cpp)
+add_library(packfile STATIC src/pak/packfile.cpp)
 target_include_directories(packfile PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(packfile PUBLIC lz4::lz4)
 

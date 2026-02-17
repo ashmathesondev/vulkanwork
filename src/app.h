@@ -5,9 +5,9 @@
 
 #include <string>
 
-#include "camera.h"
 #include "debugWindow.h"
-#include "renderer.h"
+#include "graphics/camera.h"
+#include "graphics/renderer.h"
 
 struct App
 {

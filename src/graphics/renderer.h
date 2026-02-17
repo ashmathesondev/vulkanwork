@@ -11,7 +11,7 @@
 
 #include "material.h"
 #include "mesh.h"
-#include "packfile.h"
+#include "pak/packfile.h"
 #include "texture.h"
 
 struct Camera;
