@@ -2,9 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
-
 #include <glm/gtc/matrix_transform.hpp>
+#include <limits>
 
 #include "graphics/mesh.h"
 #include "sceneGraph.h"
@@ -15,12 +14,12 @@ Ray Selection::screen_to_ray(float mouseX, float mouseY, float screenW,
 {
 	// Convert screen coords to NDC [-1, 1]
 	float ndcX = (2.0f * mouseX) / screenW - 1.0f;
-	float ndcY = 1.0f - (2.0f * mouseY) / screenH;  // flip Y
+	float ndcY = 1.0f - (2.0f * mouseY) / screenH;	// flip Y
 
 	glm::mat4 invVP = glm::inverse(proj * view);
 
 	// Unproject near and far points
-	glm::vec4 nearNDC(ndcX, ndcY, 0.0f, 1.0f);  // Vulkan depth 0 = near
+	glm::vec4 nearNDC(ndcX, ndcY, 0.0f, 1.0f);	// Vulkan depth 0 = near
 	glm::vec4 farNDC(ndcX, ndcY, 1.0f, 1.0f);
 
 	glm::vec4 nearWorld = invVP * nearNDC;

@@ -67,7 +67,7 @@ file(GLOB_RECURSE HEADER_FILES "src/*.h" "src/*.hpp")
 source_group(TREE ${CMAKE_SOURCE_DIR}/src PREFIX "Source Files" FILES ${SRC_FILES})
 source_group(TREE ${CMAKE_SOURCE_DIR}/src PREFIX "Header Files" FILES ${HEADER_FILES})
 
-add_executable(vulkanwork ${SRC_FILES})
+add_executable(vulkanwork ${SRC_FILES} ${HEADER_FILES})
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT vulkanwork)
 

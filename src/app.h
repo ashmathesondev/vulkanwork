@@ -5,13 +5,13 @@
 
 #include <string>
 
-#include "debugWindow.h"
-#include "gizmo.h"
+#include "editor/debugWindow.h"
+#include "editor/gizmo.h"
+#include "editor/sceneGraph.h"
+#include "editor/selection.h"
 #include "graphics/camera.h"
 #include "graphics/light.h"
 #include "graphics/renderer.h"
-#include "sceneGraph.h"
-#include "selection.h"
 
 struct App
 {

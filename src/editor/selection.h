@@ -1,10 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <glm/glm.hpp>
 #include <optional>
 #include <vector>
-
-#include <glm/glm.hpp>
 
 struct AABB;
 struct Mesh;

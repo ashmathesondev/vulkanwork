@@ -4,7 +4,7 @@
 #include "config.h"
 #include "cube.h"
 #include "debugLines.h"
-#include "gltfLoader.h"
+#include "loaders/gltfLoader.h"
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
