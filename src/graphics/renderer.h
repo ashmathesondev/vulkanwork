@@ -13,6 +13,7 @@
 #include "material.h"
 #include "mesh.h"
 #include "pak/packfile.h"
+#include "scene.h"
 #include "texture.h"
 
 struct Camera;
@@ -46,6 +47,7 @@ struct Renderer
 	std::optional<FrameContext> begin_frame();
 	void update_uniforms(const Camera& camera, float time,
 						 const LightEnvironment& lights);
+	void update_debug_lines(const LightEnvironment& lights);
 	void draw_scene(VkCommandBuffer cmd);
 	void end_frame(const FrameContext& ctx);
 
@@ -65,6 +67,27 @@ struct Renderer
 
 	// Heatmap toggle (controlled from ImGui)
 	bool showHeatmap_ = false;
+
+	// Debug line visualization toggle (controlled from ImGui)
+	bool showDebugLines_ = true;
+
+	// Debug toggles (controlled from ImGui)
+	bool debugSkipDepthPrepass_ = false;
+	bool debugDisableCulling_ = false;
+	int debugFrontFace_ = 0;  // 0=CCW, 1=CW
+
+	// Scene accessors (for selection / gizmo)
+	const std::vector<Mesh>& meshes() const { return meshes_; }
+	std::vector<Mesh>& meshes() { return meshes_; }
+	const glm::mat4& last_view() const { return lastView_; }
+	const glm::mat4& last_proj() const { return lastProj_; }
+
+	// Scene management
+	void load_scene(const std::string& modelPath);
+	void unload_scene();
+	void load_scene_empty();
+	void import_gltf(const std::string& path);
+	void delete_mesh(uint32_t meshIdx);
 
    private:
 	// Asset pack
@@ -120,6 +143,14 @@ struct Renderer
 	// Heatmap debug overlay
 	VkPipelineLayout heatmapPipelineLayout_ = VK_NULL_HANDLE;
 	VkPipeline heatmapPipeline_ = VK_NULL_HANDLE;
+
+	// Debug line visualization
+	VkPipelineLayout debugLinePipelineLayout_ = VK_NULL_HANDLE;
+	VkPipeline debugLinePipeline_ = VK_NULL_HANDLE;
+	VkBuffer debugLineVertexBuffers_[MAX_FRAMES_IN_FLIGHT] = {};
+	VkDeviceMemory debugLineVertexMemory_[MAX_FRAMES_IN_FLIGHT] = {};
+	void* debugLineVertexMapped_[MAX_FRAMES_IN_FLIGHT] = {};
+	uint32_t debugLineVertexCount_ = 0;
 
 	// Light / tile SSBOs (per frame-in-flight)
 	std::vector<VkBuffer> lightSSBOs_;
@@ -181,14 +212,14 @@ struct Renderer
 	std::vector<VkSemaphore> renderFinishedSemaphores_;
 	std::vector<VkFence> inFlightFences_;
 
+	// Cached view/proj for picking/gizmo
+	glm::mat4 lastView_{1.0f};
+	glm::mat4 lastProj_{1.0f};
+
 	// State
 	uint32_t currentFrame_ = 0;
 	bool framebufferResized_ = false;
 	char gpuName_[256] = {};
-
-	// Spinning cube
-	uint32_t cubeMeshIndex_ = 0;
-	uint32_t cubeMaterialIndex_ = 0;
 
 	// Vulkan setup
 	void create_instance();
@@ -213,7 +244,6 @@ struct Renderer
 	void create_uniform_buffers();
 	void create_frame_descriptor_pool();
 	void create_frame_descriptor_sets();
-	void load_scene(const std::string& modelPath);
 
 	// Forward+ setup
 	void create_depth_only_render_pass();
@@ -225,9 +255,14 @@ struct Renderer
 	void create_light_descriptor_sets();
 	void create_compute_pipeline();
 	void create_heatmap_pipeline();
+	void create_debug_line_pipeline();
+	void create_debug_line_buffers();
 
 	// Forward+ per-frame
 	void draw_depth_prepass(VkCommandBuffer cmd);
+
+	// Scene helpers
+	void add_cube_to_scene(Scene& scene);
 
 	// Texture upload
 	void upload_texture(Texture& tex);
@@ -240,6 +275,7 @@ struct Renderer
 	// Material descriptors
 	void create_material_descriptor_pool(uint32_t materialCount);
 	void create_material_descriptor(Material& mat);
+	void rebuild_material_descriptors();
 
 	// Swapchain management
 	void recreate_swapchain();

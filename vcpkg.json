@@ -12,6 +12,8 @@
     },
     "stb",
     "lz4",
-    "tinygltf"
+    "tinygltf",
+    "imguizmo",
+    "nlohmann-json"
   ]
 }

@@ -3,12 +3,26 @@
 #include <vulkan/vulkan.h>
 
 #include <array>
+#include <cfloat>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
+
+struct AABB
+{
+	glm::vec3 min{FLT_MAX};
+	glm::vec3 max{-FLT_MAX};
+
+	void expand(const glm::vec3& p)
+	{
+		min = glm::min(min, p);
+		max = glm::max(max, p);
+	}
+};
 
 struct Vertex
 {
@@ -36,10 +50,12 @@ struct Vertex
 struct Mesh
 {
 	// CPU data
+	std::string name;
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
 	uint32_t materialIndex = 0;
 	glm::mat4 transform{1.0f};
+	AABB localBounds;
 
 	// GPU handles (set by Renderer::upload_mesh)
 	VkBuffer vertexBuffer = VK_NULL_HANDLE;

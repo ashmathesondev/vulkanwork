@@ -13,6 +13,8 @@ find_package(imgui CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 find_package(lz4 CONFIG REQUIRED)
 find_path(TINYGLTF_INCLUDE_DIRS "tiny_gltf.h")
+find_package(imguizmo CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 
 # --- Shader compilation ------------------------------------------------------
 if(Vulkan_GLSLC_EXECUTABLE)
@@ -32,6 +34,8 @@ set(SHADERS
     ${SHADER_SRC_DIR}/light_cull.comp
     ${SHADER_SRC_DIR}/debug_heatmap.vert
     ${SHADER_SRC_DIR}/debug_heatmap.frag
+    ${SHADER_SRC_DIR}/debug_lines.vert
+    ${SHADER_SRC_DIR}/debug_lines.frag
 )
 
 foreach(SHADER ${SHADERS})
@@ -61,13 +65,19 @@ add_executable(vulkanwork
     src/main.cpp
     src/app.cpp
     src/debugWindow.cpp
+    src/debugLines.cpp
     src/gltfLoader.cpp
+    src/selection.cpp
+    src/gizmo.cpp
+    src/sceneGraph.cpp
     src/graphics/camera.cpp
     src/graphics/cube.cpp
     src/graphics/light.cpp
     src/graphics/material.cpp
     src/graphics/renderer.cpp
     src/graphics/texture.cpp
+    src/sceneFile.cpp
+    src/vendor/ImGuiFileDialog/ImGuiFileDialog.cpp
 )
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT vulkanwork)
@@ -79,6 +89,7 @@ target_include_directories(vulkanwork PRIVATE
     ${CMAKE_BINARY_DIR}/generated
     ${Stb_INCLUDE_DIR}
     ${TINYGLTF_INCLUDE_DIRS}
+    ${CMAKE_SOURCE_DIR}/src/vendor/ImGuiFileDialog
 )
 
 target_link_libraries(vulkanwork PRIVATE
@@ -86,6 +97,8 @@ target_link_libraries(vulkanwork PRIVATE
     glfw
     glm::glm
     imgui::imgui
+    imguizmo::imguizmo
+    nlohmann_json::nlohmann_json
     packfile
 )
 
@@ -109,9 +122,12 @@ add_custom_command(
         shaders/light_cull.comp.spv=${SHADER_BIN_DIR}/light_cull.comp.spv
         shaders/debug_heatmap.vert.spv=${SHADER_BIN_DIR}/debug_heatmap.vert.spv
         shaders/debug_heatmap.frag.spv=${SHADER_BIN_DIR}/debug_heatmap.frag.spv
+        shaders/debug_lines.vert.spv=${SHADER_BIN_DIR}/debug_lines.vert.spv
+        shaders/debug_lines.frag.spv=${SHADER_BIN_DIR}/debug_lines.frag.spv
         textures/grids/1024/BlueGrid.png=${CMAKE_SOURCE_DIR}/textures/grids/1024/BlueGrid.png
     COMMAND pak_packer -v ${CMAKE_BINARY_DIR}/assets.pak
     DEPENDS shaders pak_packer
+            ${SPV_OUTPUTS}
             ${CMAKE_SOURCE_DIR}/textures/grids/1024/BlueGrid.png
     COMMENT "Packing and validating assets.pak"
 )

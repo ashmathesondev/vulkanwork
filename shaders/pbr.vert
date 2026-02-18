@@ -30,6 +30,8 @@ layout(location = 0) out vec3 fragWorldPos;
 layout(location = 1) out vec2 fragTexCoord;
 layout(location = 2) out mat3 fragTBN;
 
+invariant gl_Position;  // ensure identical depth across pipelines
+
 void main() {
     vec4 worldPos = push.model * vec4(inPosition, 1.0);
     fragWorldPos = worldPos.xyz;

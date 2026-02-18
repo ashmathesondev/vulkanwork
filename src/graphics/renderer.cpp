@@ -3,6 +3,7 @@
 #include "camera.h"
 #include "config.h"
 #include "cube.h"
+#include "debugLines.h"
 #include "gltfLoader.h"
 
 #define GLM_FORCE_RADIANS
@@ -124,6 +125,8 @@ void Renderer::init(GLFWwindow* window, const std::string& modelPath)
 	create_pbr_pipeline();
 	create_compute_pipeline();
 	create_heatmap_pipeline();
+	create_debug_line_pipeline();
+	create_debug_line_buffers();
 	create_uniform_buffers();
 	create_frame_descriptor_pool();
 	create_frame_descriptor_sets();
@@ -195,6 +198,16 @@ void Renderer::cleanup()
 
 	vkDestroyCommandPool(device_, commandPool_, nullptr);
 
+	// Debug line buffers
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	{
+		if (debugLineVertexBuffers_[i])
+		{
+			vkDestroyBuffer(device_, debugLineVertexBuffers_[i], nullptr);
+			vkFreeMemory(device_, debugLineVertexMemory_[i], nullptr);
+		}
+	}
+
 	// Pipelines
 	vkDestroyPipeline(device_, pbrPipeline_, nullptr);
 	vkDestroyPipelineLayout(device_, pbrPipelineLayout_, nullptr);
@@ -204,6 +217,8 @@ void Renderer::cleanup()
 	vkDestroyPipelineLayout(device_, computePipelineLayout_, nullptr);
 	vkDestroyPipeline(device_, heatmapPipeline_, nullptr);
 	vkDestroyPipelineLayout(device_, heatmapPipelineLayout_, nullptr);
+	vkDestroyPipeline(device_, debugLinePipeline_, nullptr);
+	vkDestroyPipelineLayout(device_, debugLinePipelineLayout_, nullptr);
 
 	// Render passes
 	vkDestroyRenderPass(device_, renderPass_, nullptr);
@@ -253,7 +268,23 @@ std::optional<Renderer::FrameContext> Renderer::begin_frame()
 	VK_CHECK(vkBeginCommandBuffer(cmd, &beginInfo));
 
 	// ---- 1. Depth pre-pass ----
-	draw_depth_prepass(cmd);
+	if (!debugSkipDepthPrepass_)
+		draw_depth_prepass(cmd);
+	else
+	{
+		// Still need to transition depth image for compute read
+		// Do a clear + transition via a minimal render pass
+		VkClearValue clear{};
+		clear.depthStencil = {1.0f, 0};
+		VkRenderPassBeginInfo rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+		rpInfo.renderPass = depthOnlyRenderPass_;
+		rpInfo.framebuffer = depthOnlyFramebuffer_;
+		rpInfo.renderArea = {{0, 0}, swapchainExtent_};
+		rpInfo.clearValueCount = 1;
+		rpInfo.pClearValues = &clear;
+		vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
+		vkCmdEndRenderPass(cmd);
+	}
 
 	// ---- 2. Barrier: depth attachment -> shader read for compute ----
 	{
@@ -319,7 +350,7 @@ std::optional<Renderer::FrameContext> Renderer::begin_frame()
 	// ---- 5. Begin main shading render pass (depth loadOp=LOAD) ----
 	std::array<VkClearValue, 2> clears{};
 	clears[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};
-	clears[1].depthStencil = {1.0f, 0};	 // not used (LOAD), but must be valid
+	clears[1].depthStencil = {1.0f, 0};
 
 	VkRenderPassBeginInfo rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
 	rpInfo.renderPass = renderPass_;
@@ -354,6 +385,11 @@ void Renderer::update_uniforms(const Camera& camera, float time,
 				   static_cast<float>(swapchainExtent_.height);
 	ubo.proj = glm::perspective(glm::radians(camera.fov), aspect, 0.1f, 100.0f);
 	ubo.proj[1][1] *= -1.0f;  // Vulkan Y-flip
+
+	// Cache for picking / gizmo (store un-flipped proj for ImGuizmo)
+	lastView_ = ubo.view;
+	lastProj_ =
+		glm::perspective(glm::radians(camera.fov), aspect, 0.1f, 100.0f);
 	ubo.invProj = glm::inverse(ubo.proj);
 
 	ubo.cameraPos = camera.position;
@@ -375,23 +411,18 @@ void Renderer::update_uniforms(const Camera& camera, float time,
 		std::memcpy(lightSSBOMapped_[currentFrame_], gpuLights.data(),
 					count * sizeof(GPULight));
 	}
-
-	// Spin the cube
-	if (cubeMeshIndex_ < meshes_.size())
-	{
-		glm::mat4 m =
-			glm::translate(glm::mat4(1.0f), glm::vec3(-3.0f, 0.0f, 0.0f));
-		m = glm::rotate(m, time * glm::radians(45.0f),
-						glm::vec3(0.0f, 1.0f, 0.0f));
-		m = glm::rotate(m, time * glm::radians(30.0f),
-						glm::vec3(1.0f, 0.0f, 0.0f));
-		meshes_[cubeMeshIndex_].transform = m;
-	}
 }
 
 void Renderer::draw_scene(VkCommandBuffer cmd)
 {
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pbrPipeline_);
+
+	// Dynamic rasterizer state (debug toggles)
+	vkCmdSetCullMode(
+		cmd, debugDisableCulling_ ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+	vkCmdSetFrontFace(cmd, debugFrontFace_ == 1
+							   ? VK_FRONT_FACE_CLOCKWISE
+							   : VK_FRONT_FACE_COUNTER_CLOCKWISE);
 
 	// Bind frame descriptor set (set 0)
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -437,6 +468,20 @@ void Renderer::draw_scene(VkCommandBuffer cmd)
 			cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, heatmapPipelineLayout_, 1, 1,
 			&lightDescriptorSets_[currentFrame_], 0, nullptr);
 		vkCmdDraw(cmd, 3, 1, 0, 0);
+	}
+
+	// Debug light wireframes
+	if (showDebugLines_ && debugLineVertexCount_ > 0)
+	{
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+						  debugLinePipeline_);
+		vkCmdBindDescriptorSets(
+			cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, debugLinePipelineLayout_, 0,
+			1, &frameDescriptorSets_[currentFrame_], 0, nullptr);
+		VkBuffer vbufs[] = {debugLineVertexBuffers_[currentFrame_]};
+		VkDeviceSize offs[] = {0};
+		vkCmdBindVertexBuffers(cmd, 0, 1, vbufs, offs);
+		vkCmdDraw(cmd, debugLineVertexCount_, 1, 0, 0);
 	}
 }
 
@@ -809,7 +854,7 @@ void Renderer::create_render_pass()
 	depthAtt.format = find_depth_format();
 	depthAtt.samples = VK_SAMPLE_COUNT_1_BIT;
 	depthAtt.loadOp =
-		VK_ATTACHMENT_LOAD_OP_LOAD;	 // preserve from depth prepass
+		VK_ATTACHMENT_LOAD_OP_CLEAR;  // main pass does its own depth test
 	depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 	depthAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	depthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -955,8 +1000,8 @@ void Renderer::create_pbr_pipeline()
 	VkPipelineDepthStencilStateCreateInfo ds{
 		VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
 	ds.depthTestEnable = VK_TRUE;
-	ds.depthWriteEnable = VK_FALSE;	 // depth already filled by prepass
-	ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+	ds.depthWriteEnable = VK_TRUE;
+	ds.depthCompareOp = VK_COMPARE_OP_LESS;
 
 	VkPipelineColorBlendAttachmentState blendAtt{};
 	blendAtt.colorWriteMask =
@@ -968,11 +1013,12 @@ void Renderer::create_pbr_pipeline()
 	blend.attachmentCount = 1;
 	blend.pAttachments = &blendAtt;
 
-	VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT,
-								  VK_DYNAMIC_STATE_SCISSOR};
+	VkDynamicState dynStates[] = {
+		VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+		VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE};
 	VkPipelineDynamicStateCreateInfo dyn{
 		VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-	dyn.dynamicStateCount = 2;
+	dyn.dynamicStateCount = 4;
 	dyn.pDynamicStates = dynStates;
 
 	// Pipeline layout: set 0=frame, set 1=material, set 2=lightData, push=model
@@ -1491,13 +1537,8 @@ void Renderer::create_frame_descriptor_sets()
 // Scene loading
 // =============================================================================
 
-void Renderer::load_scene(const std::string& modelPath)
+void Renderer::add_cube_to_scene(Scene& scene)
 {
-	Scene scene = load_gltf(modelPath);
-
-	// Upload glTF textures in-place
-	for (auto& tex : scene.textures) upload_texture(tex);
-
 	// Load the BlueGrid texture from the pack file for the cube
 	{
 		auto png = packFile_->read("textures/grids/1024/BlueGrid.png");
@@ -1528,16 +1569,28 @@ void Renderer::load_scene(const std::string& modelPath)
 	cubeMat.roughnessFactor = 0.5f;
 	scene.materials.push_back(cubeMat);
 
+	// Append cube mesh
+	Mesh cube = make_cube_mesh();
+	cube.name = "Cube";
+	cube.materialIndex = cubeMaterialIdx;
+	cube.transform =
+		glm::translate(glm::mat4(1.0f), glm::vec3(-3.0f, 0.0f, 0.0f));
+	upload_mesh(cube);
+	scene.meshes.push_back(std::move(cube));
+}
+
+void Renderer::load_scene(const std::string& modelPath)
+{
+	Scene scene = load_gltf(modelPath);
+
+	// Upload glTF textures in-place
+	for (auto& tex : scene.textures) upload_texture(tex);
+
 	// Upload glTF meshes in-place
 	for (auto& mesh : scene.meshes) upload_mesh(mesh);
 
-	// Append spinning cube mesh
-	Mesh cube = make_cube_mesh();
-	cube.materialIndex = cubeMaterialIdx;
-	cubeMeshIndex_ = static_cast<uint32_t>(scene.meshes.size());
-	cubeMaterialIndex_ = cubeMaterialIdx;
-	upload_mesh(cube);
-	scene.meshes.push_back(std::move(cube));
+	// Add the cube (BlueGrid texture + material + mesh)
+	add_cube_to_scene(scene);
 
 	// Move scene data into renderer members
 	textures_ = std::move(scene.textures);
@@ -1548,6 +1601,251 @@ void Renderer::load_scene(const std::string& modelPath)
 		static_cast<uint32_t>(scene.materials.size()));
 	for (auto& mat : scene.materials) create_material_descriptor(mat);
 	materials_ = std::move(scene.materials);
+}
+
+void Renderer::unload_scene()
+{
+	vkDeviceWaitIdle(device_);
+
+	// Free mesh GPU buffers
+	for (auto& m : meshes_)
+	{
+		vkDestroyBuffer(device_, m.vertexBuffer, nullptr);
+		vkFreeMemory(device_, m.vertexMemory, nullptr);
+		vkDestroyBuffer(device_, m.indexBuffer, nullptr);
+		vkFreeMemory(device_, m.indexMemory, nullptr);
+	}
+	meshes_.clear();
+
+	// Free material factor buffers
+	for (auto& m : materials_)
+	{
+		if (m.factorBuffer) vkDestroyBuffer(device_, m.factorBuffer, nullptr);
+		if (m.factorMemory) vkFreeMemory(device_, m.factorMemory, nullptr);
+	}
+	materials_.clear();
+
+	// Free scene textures (but not default textures)
+	for (auto& t : textures_) destroy_texture(t);
+	textures_.clear();
+
+	// Destroy material descriptor pool
+	if (materialDescriptorPool_)
+	{
+		vkDestroyDescriptorPool(device_, materialDescriptorPool_, nullptr);
+		materialDescriptorPool_ = VK_NULL_HANDLE;
+	}
+}
+
+void Renderer::load_scene_empty()
+{
+	Scene scene;
+
+	// Add the cube (BlueGrid texture + material + mesh)
+	add_cube_to_scene(scene);
+
+	// Move scene data into renderer members
+	textures_ = std::move(scene.textures);
+	meshes_ = std::move(scene.meshes);
+
+	// Create material descriptors
+	create_material_descriptor_pool(
+		static_cast<uint32_t>(scene.materials.size()));
+	for (auto& mat : scene.materials) create_material_descriptor(mat);
+	materials_ = std::move(scene.materials);
+}
+
+// =============================================================================
+// Import / Delete / Rebuild helpers
+// =============================================================================
+
+void Renderer::import_gltf(const std::string& path)
+{
+	vkDeviceWaitIdle(device_);
+
+	Scene scene = load_gltf(path);
+
+	uint32_t texOffset = static_cast<uint32_t>(textures_.size());
+	uint32_t matOffset = static_cast<uint32_t>(materials_.size());
+
+	// Upload and append textures
+	for (auto& tex : scene.textures) upload_texture(tex);
+	textures_.insert(textures_.end(),
+					 std::make_move_iterator(scene.textures.begin()),
+					 std::make_move_iterator(scene.textures.end()));
+
+	// Offset material texture indices, then append
+	for (auto& mat : scene.materials)
+	{
+		if (mat.baseColorTexture >= 0)
+			mat.baseColorTexture += static_cast<int32_t>(texOffset);
+		if (mat.metallicRoughnessTexture >= 0)
+			mat.metallicRoughnessTexture += static_cast<int32_t>(texOffset);
+		if (mat.normalTexture >= 0)
+			mat.normalTexture += static_cast<int32_t>(texOffset);
+		if (mat.emissiveTexture >= 0)
+			mat.emissiveTexture += static_cast<int32_t>(texOffset);
+	}
+
+	// Offset mesh material indices, upload, then append
+	for (auto& mesh : scene.meshes)
+	{
+		mesh.materialIndex += matOffset;
+		upload_mesh(mesh);
+	}
+	meshes_.insert(meshes_.end(), std::make_move_iterator(scene.meshes.begin()),
+				   std::make_move_iterator(scene.meshes.end()));
+
+	// Append materials (without GPU descriptors yet)
+	materials_.insert(materials_.end(),
+					  std::make_move_iterator(scene.materials.begin()),
+					  std::make_move_iterator(scene.materials.end()));
+
+	rebuild_material_descriptors();
+}
+
+void Renderer::delete_mesh(uint32_t meshIdx)
+{
+	if (meshIdx >= meshes_.size()) return;
+
+	vkDeviceWaitIdle(device_);
+
+	// 1. Destroy mesh GPU buffers and erase
+	auto& mesh = meshes_[meshIdx];
+	vkDestroyBuffer(device_, mesh.vertexBuffer, nullptr);
+	vkFreeMemory(device_, mesh.vertexMemory, nullptr);
+	vkDestroyBuffer(device_, mesh.indexBuffer, nullptr);
+	vkFreeMemory(device_, mesh.indexMemory, nullptr);
+
+	uint32_t deletedMatIdx = mesh.materialIndex;
+	meshes_.erase(meshes_.begin() + meshIdx);
+
+	// 2. Fix up remaining mesh materialIndex for the erased mesh's shift
+	//    (materialIndex doesn't shift yet — we handle that after removing mats)
+
+	// 3. Collect unreferenced material indices
+	std::vector<bool> matReferenced(materials_.size(), false);
+	for (const auto& m : meshes_) matReferenced[m.materialIndex] = true;
+
+	// Collect unreferenced texture indices from unreferenced materials
+	std::vector<bool> texReferencedByUnrefMat(textures_.size(), false);
+	for (uint32_t i = 0; i < materials_.size(); ++i)
+	{
+		if (!matReferenced[i])
+		{
+			auto markTex = [&](int32_t idx)
+			{
+				if (idx >= 0 && idx < static_cast<int32_t>(textures_.size()))
+					texReferencedByUnrefMat[idx] = true;
+			};
+			markTex(materials_[i].baseColorTexture);
+			markTex(materials_[i].metallicRoughnessTexture);
+			markTex(materials_[i].normalTexture);
+			markTex(materials_[i].emissiveTexture);
+		}
+	}
+
+	// 4. Destroy unreferenced materials (reverse order to keep indices valid)
+	std::vector<uint32_t> removedMatIndices;
+	for (int32_t i = static_cast<int32_t>(materials_.size()) - 1; i >= 0; --i)
+	{
+		if (!matReferenced[i])
+		{
+			if (materials_[i].factorBuffer)
+				vkDestroyBuffer(device_, materials_[i].factorBuffer, nullptr);
+			if (materials_[i].factorMemory)
+				vkFreeMemory(device_, materials_[i].factorMemory, nullptr);
+			materials_.erase(materials_.begin() + i);
+			removedMatIndices.push_back(static_cast<uint32_t>(i));
+		}
+	}
+
+	// 5. Check which textures referenced by removed materials are truly
+	//    unreferenced (not used by any remaining material)
+	std::vector<bool> texReferenced(texReferencedByUnrefMat.size(), false);
+	for (const auto& mat : materials_)
+	{
+		auto markTex = [&](int32_t idx)
+		{
+			if (idx >= 0 && idx < static_cast<int32_t>(texReferenced.size()))
+				texReferenced[idx] = true;
+		};
+		markTex(mat.baseColorTexture);
+		markTex(mat.metallicRoughnessTexture);
+		markTex(mat.normalTexture);
+		markTex(mat.emissiveTexture);
+	}
+
+	// Destroy unreferenced textures (reverse order)
+	std::vector<uint32_t> removedTexIndices;
+	for (int32_t i = static_cast<int32_t>(texReferencedByUnrefMat.size()) - 1;
+		 i >= 0; --i)
+	{
+		if (texReferencedByUnrefMat[i] && !texReferenced[i])
+		{
+			destroy_texture(textures_[i]);
+			textures_.erase(textures_.begin() + i);
+			removedTexIndices.push_back(static_cast<uint32_t>(i));
+		}
+	}
+
+	// 6. Fix up material indices in remaining meshes
+	for (auto& m : meshes_)
+	{
+		uint32_t shift = 0;
+		for (uint32_t removed : removedMatIndices)
+			if (removed <= m.materialIndex) ++shift;
+		m.materialIndex -= shift;
+	}
+
+	// 7. Fix up texture indices in remaining materials
+	for (auto& mat : materials_)
+	{
+		auto fixTex = [&](int32_t& idx)
+		{
+			if (idx < 0) return;
+			uint32_t shift = 0;
+			for (uint32_t removed : removedTexIndices)
+				if (removed <= static_cast<uint32_t>(idx)) ++shift;
+			idx -= static_cast<int32_t>(shift);
+		};
+		fixTex(mat.baseColorTexture);
+		fixTex(mat.metallicRoughnessTexture);
+		fixTex(mat.normalTexture);
+		fixTex(mat.emissiveTexture);
+	}
+
+	rebuild_material_descriptors();
+}
+
+void Renderer::rebuild_material_descriptors()
+{
+	// Destroy old factor buffers and descriptor pool
+	for (auto& mat : materials_)
+	{
+		if (mat.factorBuffer)
+		{
+			vkDestroyBuffer(device_, mat.factorBuffer, nullptr);
+			mat.factorBuffer = VK_NULL_HANDLE;
+		}
+		if (mat.factorMemory)
+		{
+			vkFreeMemory(device_, mat.factorMemory, nullptr);
+			mat.factorMemory = VK_NULL_HANDLE;
+		}
+		mat.descriptorSet = VK_NULL_HANDLE;
+	}
+
+	if (materialDescriptorPool_)
+	{
+		vkDestroyDescriptorPool(device_, materialDescriptorPool_, nullptr);
+		materialDescriptorPool_ = VK_NULL_HANDLE;
+	}
+
+	if (materials_.empty()) return;
+
+	create_material_descriptor_pool(static_cast<uint32_t>(materials_.size()));
+	for (auto& mat : materials_) create_material_descriptor(mat);
 }
 
 // =============================================================================
@@ -1900,11 +2198,12 @@ void Renderer::create_depth_prepass_pipeline()
 		VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
 	blend.attachmentCount = 0;	// no color attachments
 
-	VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT,
-								  VK_DYNAMIC_STATE_SCISSOR};
+	VkDynamicState dynStates[] = {
+		VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+		VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE};
 	VkPipelineDynamicStateCreateInfo dyn{
 		VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-	dyn.dynamicStateCount = 2;
+	dyn.dynamicStateCount = 4;
 	dyn.pDynamicStates = dynStates;
 
 	// Layout: set 0 = frame UBO, push constant = model matrix
@@ -1971,6 +2270,14 @@ void Renderer::draw_depth_prepass(VkCommandBuffer cmd)
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
 					  depthPrepassPipeline_);
+
+	// Dynamic rasterizer state (debug toggles)
+	vkCmdSetCullMode(
+		cmd, debugDisableCulling_ ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+	vkCmdSetFrontFace(cmd, debugFrontFace_ == 1
+							   ? VK_FRONT_FACE_CLOCKWISE
+							   : VK_FRONT_FACE_COUNTER_CLOCKWISE);
+
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
 							depthPrepassPipelineLayout_, 0, 1,
 							&frameDescriptorSets_[currentFrame_], 0, nullptr);
@@ -2309,6 +2616,139 @@ void Renderer::create_heatmap_pipeline()
 
 	vkDestroyShaderModule(device_, fragMod, nullptr);
 	vkDestroyShaderModule(device_, vertMod, nullptr);
+}
+
+// =============================================================================
+// Debug line visualization
+// =============================================================================
+
+void Renderer::create_debug_line_pipeline()
+{
+	auto vertCode = packFile_->read("shaders/debug_lines.vert.spv");
+	auto fragCode = packFile_->read("shaders/debug_lines.frag.spv");
+	VkShaderModule vertMod = create_shader_module(vertCode);
+	VkShaderModule fragMod = create_shader_module(fragCode);
+
+	VkPipelineShaderStageCreateInfo stages[2]{};
+	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+	stages[0].module = vertMod;
+	stages[0].pName = "main";
+	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	stages[1].module = fragMod;
+	stages[1].pName = "main";
+
+	auto bindingDesc = LineVertex::binding_desc();
+	auto attribDescs = LineVertex::attrib_descs();
+	VkPipelineVertexInputStateCreateInfo vertInput{
+		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+	vertInput.vertexBindingDescriptionCount = 1;
+	vertInput.pVertexBindingDescriptions = &bindingDesc;
+	vertInput.vertexAttributeDescriptionCount =
+		static_cast<uint32_t>(attribDescs.size());
+	vertInput.pVertexAttributeDescriptions = attribDescs.data();
+
+	VkPipelineInputAssemblyStateCreateInfo inputAsm{
+		VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+	inputAsm.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+
+	VkPipelineViewportStateCreateInfo vpState{
+		VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+	vpState.viewportCount = 1;
+	vpState.scissorCount = 1;
+
+	VkPipelineRasterizationStateCreateInfo raster{
+		VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+	raster.polygonMode = VK_POLYGON_MODE_FILL;
+	raster.lineWidth = 1.0f;
+	raster.cullMode = VK_CULL_MODE_NONE;
+
+	VkPipelineMultisampleStateCreateInfo ms{
+		VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+	VkPipelineDepthStencilStateCreateInfo ds{
+		VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+	ds.depthTestEnable = VK_TRUE;
+	ds.depthWriteEnable = VK_FALSE;
+	ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+	VkPipelineColorBlendAttachmentState blendAtt{};
+	blendAtt.colorWriteMask =
+		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+		VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+	VkPipelineColorBlendStateCreateInfo blend{
+		VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+	blend.attachmentCount = 1;
+	blend.pAttachments = &blendAtt;
+
+	VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT,
+								  VK_DYNAMIC_STATE_SCISSOR};
+	VkPipelineDynamicStateCreateInfo dyn{
+		VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+	dyn.dynamicStateCount = 2;
+	dyn.pDynamicStates = dynStates;
+
+	// Layout: set 0 = frame UBO only
+	VkPipelineLayoutCreateInfo layoutCI{
+		VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+	layoutCI.setLayoutCount = 1;
+	layoutCI.pSetLayouts = &frameSetLayout_;
+	VK_CHECK(vkCreatePipelineLayout(device_, &layoutCI, nullptr,
+									&debugLinePipelineLayout_));
+
+	VkGraphicsPipelineCreateInfo ci{
+		VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+	ci.stageCount = 2;
+	ci.pStages = stages;
+	ci.pVertexInputState = &vertInput;
+	ci.pInputAssemblyState = &inputAsm;
+	ci.pViewportState = &vpState;
+	ci.pRasterizationState = &raster;
+	ci.pMultisampleState = &ms;
+	ci.pDepthStencilState = &ds;
+	ci.pColorBlendState = &blend;
+	ci.pDynamicState = &dyn;
+	ci.layout = debugLinePipelineLayout_;
+	ci.renderPass = renderPass_;
+	ci.subpass = 0;
+
+	VK_CHECK(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr,
+									   &debugLinePipeline_));
+
+	vkDestroyShaderModule(device_, fragMod, nullptr);
+	vkDestroyShaderModule(device_, vertMod, nullptr);
+}
+
+void Renderer::create_debug_line_buffers()
+{
+	// 64KB per frame — enough for ~1300 line segments (2 vertices each)
+	constexpr VkDeviceSize bufSize = 64 * 1024;
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	{
+		create_buffer(bufSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+					  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+						  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+					  debugLineVertexBuffers_[i], debugLineVertexMemory_[i]);
+		vkMapMemory(device_, debugLineVertexMemory_[i], 0, bufSize, 0,
+					&debugLineVertexMapped_[i]);
+	}
+}
+
+void Renderer::update_debug_lines(const LightEnvironment& lights)
+{
+	auto verts = generate_light_lines(lights);
+	constexpr VkDeviceSize bufSize = 64 * 1024;
+	uint32_t maxVerts = static_cast<uint32_t>(bufSize / sizeof(LineVertex));
+	debugLineVertexCount_ = static_cast<uint32_t>(
+		std::min(static_cast<uint32_t>(verts.size()), maxVerts));
+	if (debugLineVertexCount_ > 0)
+	{
+		std::memcpy(debugLineVertexMapped_[currentFrame_], verts.data(),
+					debugLineVertexCount_ * sizeof(LineVertex));
+	}
 }
 
 // =============================================================================

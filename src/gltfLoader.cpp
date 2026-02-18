@@ -208,6 +208,17 @@ static void extract_node(const tinygltf::Model& model, int nodeIdx,
 			cpuMesh.materialIndex =
 				(prim.material >= 0) ? static_cast<uint32_t>(prim.material) : 0;
 
+			// Set mesh name from glTF node/mesh name
+			if (!node.name.empty())
+				cpuMesh.name = node.name;
+			else if (!mesh.name.empty())
+				cpuMesh.name = mesh.name;
+			if (mesh.primitives.size() > 1)
+			{
+				size_t primIdx = &prim - mesh.primitives.data();
+				cpuMesh.name += " [prim " + std::to_string(primIdx) + "]";
+			}
+
 			// --- Indices ---
 			if (prim.indices >= 0)
 			{
@@ -308,6 +319,10 @@ static void extract_node(const tinygltf::Model& model, int nodeIdx,
 			{
 				compute_tangents(cpuMesh.vertices, cpuMesh.indices);
 			}
+
+			// Compute local AABB from vertex positions
+			for (const auto& v : cpuMesh.vertices)
+				cpuMesh.localBounds.expand(v.pos);
 
 			// Generate indices if none provided
 			if (cpuMesh.indices.empty())
