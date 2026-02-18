@@ -114,6 +114,8 @@ bool save_scene_file(const std::string& path, const SceneFileData& data)
 		n["meshIndex"] = node.meshIndex.has_value()
 							 ? json(node.meshIndex.value())
 							 : json(nullptr);
+		n["modelPath"] = node.modelPath;
+		n["meshIndexInModel"] = node.meshIndexInModel;
 		n["parent"] =
 			node.parent.has_value() ? json(node.parent.value()) : json(nullptr);
 
@@ -261,6 +263,9 @@ bool load_scene_file(const std::string& path, SceneFileData& data)
 
 			if (n.contains("meshIndex") && !n["meshIndex"].is_null())
 				node.meshIndex = n["meshIndex"].get<uint32_t>();
+
+			node.modelPath = n.value("modelPath", std::string{});
+			node.meshIndexInModel = n.value("meshIndexInModel", 0u);
 
 			if (n.contains("parent") && !n["parent"].is_null())
 				node.parent = n["parent"].get<uint32_t>();

@@ -51,6 +51,8 @@ struct Mesh
 {
 	// CPU data
 	std::string name;
+	std::string sourcePath;
+	uint32_t sourceMeshIndex = 0;
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
 	uint32_t materialIndex = 0;

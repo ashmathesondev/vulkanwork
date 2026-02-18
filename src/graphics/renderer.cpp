@@ -1587,7 +1587,12 @@ void Renderer::load_scene(const std::string& modelPath)
 	for (auto& tex : scene.textures) upload_texture(tex);
 
 	// Upload glTF meshes in-place
-	for (auto& mesh : scene.meshes) upload_mesh(mesh);
+	for (size_t i = 0; i < scene.meshes.size(); ++i)
+	{
+		scene.meshes[i].sourcePath = modelPath;
+		scene.meshes[i].sourceMeshIndex = static_cast<uint32_t>(i);
+		upload_mesh(scene.meshes[i]);
+	}
 
 	// Add the cube (BlueGrid texture + material + mesh)
 	add_cube_to_scene(scene);
@@ -1688,10 +1693,12 @@ void Renderer::import_gltf(const std::string& path)
 	}
 
 	// Offset mesh material indices, upload, then append
-	for (auto& mesh : scene.meshes)
+	for (size_t i = 0; i < scene.meshes.size(); ++i)
 	{
-		mesh.materialIndex += matOffset;
-		upload_mesh(mesh);
+		scene.meshes[i].sourcePath = path;
+		scene.meshes[i].sourceMeshIndex = static_cast<uint32_t>(i);
+		scene.meshes[i].materialIndex += matOffset;
+		upload_mesh(scene.meshes[i]);
 	}
 	meshes_.insert(meshes_.end(), std::make_move_iterator(scene.meshes.begin()),
 				   std::make_move_iterator(scene.meshes.end()));

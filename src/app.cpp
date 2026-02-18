@@ -13,6 +13,7 @@
 #include <glm/glm.hpp>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 
 #include "config.h"
 #include "editor/sceneFile.h"
@@ -375,7 +376,8 @@ void App::build_scene_graph()
 		std::string name = meshes[i].name;
 		if (name.empty()) name = "Mesh " + std::to_string(i);
 		LOG_INFO("  mesh[%u] '%s'", i, name.c_str());
-		sceneGraph.add_node(name, meshes[i].transform, i, std::nullopt);
+		sceneGraph.add_node(name, meshes[i].transform, i, meshes[i].sourcePath,
+							meshes[i].sourceMeshIndex, std::nullopt);
 	}
 }
 
@@ -437,16 +439,45 @@ void App::do_load_scene(const std::string& path)
 			 data.modelPath.c_str(), data.sceneGraph.nodes.size());
 
 	renderer.unload_scene();
+	renderer.load_scene_empty();  // Loads the default cube at index 0
 
-	if (!data.modelPath.empty())
+	// Track loaded models to avoid double-loading and to compute offsets
+	std::unordered_map<std::string, uint32_t> modelOffsets;
+	modelOffsets["internal://cube"] = 0;
+
+	// For each node, ensure its model is loaded and its meshIndex is re-mapped
+	for (auto& node : data.sceneGraph.nodes)
 	{
-		LOG_INFO("Loading model: %s", data.modelPath.c_str());
-		renderer.load_scene(data.modelPath);
-	}
-	else
-	{
-		LOG_INFO("No model path in scene file — loading empty scene");
-		renderer.load_scene_empty();
+		if (!node.meshIndex.has_value()) continue;
+
+		// Backward compatibility: if node has no modelPath, use the global one
+		if (node.modelPath.empty())
+		{
+			node.modelPath = data.modelPath;
+			node.meshIndexInModel = node.meshIndex.value();
+		}
+
+		if (node.modelPath.empty()) continue;
+
+		if (modelOffsets.find(node.modelPath) == modelOffsets.end())
+		{
+			LOG_INFO("Loading model dependency: %s", node.modelPath.c_str());
+			uint32_t offset = static_cast<uint32_t>(renderer.meshes().size());
+			try
+			{
+				renderer.import_gltf(node.modelPath);
+				modelOffsets[node.modelPath] = offset;
+			}
+			catch (const std::exception& e)
+			{
+				LOG_ERROR("Failed to load model '%s': %s",
+						  node.modelPath.c_str(), e.what());
+				node.meshIndex.reset();
+				continue;
+			}
+		}
+
+		node.meshIndex = modelOffsets[node.modelPath] + node.meshIndexInModel;
 	}
 
 	sceneGraph = std::move(data.sceneGraph);
@@ -499,7 +530,8 @@ void App::do_import_mesh(const std::string& path)
 		std::string name = meshes[i].name;
 		if (name.empty()) name = "Mesh " + std::to_string(i);
 		LOG_INFO("  Added mesh[%u] '%s'", i, name.c_str());
-		sceneGraph.add_node(name, meshes[i].transform, i, std::nullopt);
+		sceneGraph.add_node(name, meshes[i].transform, i, meshes[i].sourcePath,
+							meshes[i].sourceMeshIndex, std::nullopt);
 	}
 
 	sceneGraph.update_world_transforms();

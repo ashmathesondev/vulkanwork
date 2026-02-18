@@ -6,6 +6,8 @@
 uint32_t SceneGraph::add_node(const std::string& name,
 							  const glm::mat4& localTransform,
 							  std::optional<uint32_t> meshIndex,
+							  const std::string& modelPath,
+							  uint32_t meshIndexInModel,
 							  std::optional<uint32_t> parentId)
 {
 	uint32_t idx = static_cast<uint32_t>(nodes.size());
@@ -15,6 +17,8 @@ uint32_t SceneGraph::add_node(const std::string& name,
 	node.localTransform = localTransform;
 	node.worldTransform = localTransform;
 	node.meshIndex = meshIndex;
+	node.modelPath = modelPath;
+	node.meshIndexInModel = meshIndexInModel;
 	node.parent = parentId;
 
 	nodes.push_back(std::move(node));
