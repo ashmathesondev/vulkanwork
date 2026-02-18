@@ -1,7 +1,7 @@
 #include "debugWindow.h"
 
-#include <ImGuizmo.h>
 #include <imgui.h>
+#include <ImGuizmo.h>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
