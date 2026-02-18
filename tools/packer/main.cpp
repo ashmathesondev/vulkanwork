@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "pak_format.h"
+#include "pak/pak_format.h"
 
 namespace fs = std::filesystem;
 

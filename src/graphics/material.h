@@ -8,6 +8,16 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
 
+// GPU-uploaded material factors (std140 layout)
+struct MaterialFactorsGPU
+{
+	alignas(16) glm::vec4 baseColorFactor;	// 16B
+	alignas(4) float metallicFactor;		//  4B
+	alignas(4) float roughnessFactor;		//  4B
+	alignas(8) glm::vec2 _pad0;				//  8B
+	alignas(16) glm::vec4 emissiveFactor;	// 16B (vec3 + pad)
+};
+
 struct Material
 {
 	// Texture indices into scene texture array
@@ -24,4 +34,8 @@ struct Material
 
 	// GPU handle (set by Renderer::create_material_descriptor)
 	VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+
+	// Factor UBO (set by Renderer::create_material_descriptor)
+	VkBuffer factorBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory factorMemory = VK_NULL_HANDLE;
 };

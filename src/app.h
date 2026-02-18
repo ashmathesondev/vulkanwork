@@ -5,9 +5,13 @@
 
 #include <string>
 
-#include "camera.h"
 #include "debugWindow.h"
-#include "renderer.h"
+#include "gizmo.h"
+#include "graphics/camera.h"
+#include "graphics/light.h"
+#include "graphics/renderer.h"
+#include "sceneGraph.h"
+#include "selection.h"
 
 struct App
 {
@@ -20,14 +24,25 @@ struct App
 	// Renderer
 	Renderer renderer;
 
+	// Scene graph
+	SceneGraph sceneGraph;
+
 	// ImGui
 	VkDescriptorPool imguiPool = VK_NULL_HANDLE;
 
 	// Debug UI
 	DebugWindow debugWindow;
 
+	// Lights
+	LightEnvironment lights;
+
+	// Selection & Gizmo
+	Selection selection;
+	Gizmo gizmo;
+
 	// State
 	bool mouseCaptured = false;
+	bool leftClickHeld = false;
 	bool firstMouse = true;
 	double lastMouseX = 0.0;
 	double lastMouseY = 0.0;
@@ -37,6 +52,12 @@ struct App
 
 	// Model path
 	std::string modelPath;
+
+	// Scene file state
+	std::string currentScenePath;
+
+	// Import dialog state
+	bool showImportDialog_ = false;
 
 	// --- Public API ----------------------------------------------------------
 	void run();
@@ -48,4 +69,16 @@ struct App
 	void cleanup();
 	void init_imgui();
 	void process_input();
+	void build_scene_graph();
+	void save_window_config();
+	bool load_window_config(int& x, int& y, int& w, int& h);
+
+	// Scene file operations
+	bool showLoadDialog_ = false;
+	bool showSaveDialog_ = false;
+	void new_scene();
+	void do_save_scene(const std::string& path);
+	void do_load_scene(const std::string& path);
+	void do_import_mesh(const std::string& path);
+	void do_delete_selected();
 };

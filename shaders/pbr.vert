@@ -1,12 +1,17 @@
 #version 450
 
-// Per-frame UBO (set 0, binding 0)
+// Per-frame UBO (set 0, binding 0) -- Forward+
 layout(set = 0, binding = 0) uniform FrameUBO {
-    mat4 view;
-    mat4 proj;
-    vec3 cameraPos;
-    vec3 lightDir;
-    vec3 lightColor;
+    mat4  view;
+    mat4  proj;
+    mat4  invProj;
+    vec3  cameraPos;
+    uint  lightCount;
+    vec3  ambientColor;
+    uint  tileCountX;
+    uint  tileCountY;
+    uint  screenWidth;
+    uint  screenHeight;
 } frame;
 
 // Per-mesh push constant
@@ -24,6 +29,8 @@ layout(location = 3) in vec4 inTangent;
 layout(location = 0) out vec3 fragWorldPos;
 layout(location = 1) out vec2 fragTexCoord;
 layout(location = 2) out mat3 fragTBN;
+
+invariant gl_Position;  // ensure identical depth across pipelines
 
 void main() {
     vec4 worldPos = push.model * vec4(inPosition, 1.0);

@@ -9,12 +9,22 @@
 #include <string>
 #include <vector>
 
+#include "light.h"
 #include "material.h"
 #include "mesh.h"
-#include "packfile.h"
+#include "pak/packfile.h"
+#include "scene.h"
 #include "texture.h"
 
 struct Camera;
+
+// =============================================================================
+// Forward+ rendering constants
+// =============================================================================
+
+static constexpr uint32_t TILE_SIZE = 16;
+static constexpr uint32_t MAX_LIGHTS_PER_TILE = 256;
+static constexpr uint32_t MAX_LIGHTS = 1024;
 
 // =============================================================================
 // Renderer
@@ -35,7 +45,9 @@ struct Renderer
 		uint32_t imageIndex;
 	};
 	std::optional<FrameContext> begin_frame();
-	void update_uniforms(const Camera& camera, float time);
+	void update_uniforms(const Camera& camera, float time,
+						 const LightEnvironment& lights);
+	void update_debug_lines(const LightEnvironment& lights);
 	void draw_scene(VkCommandBuffer cmd);
 	void end_frame(const FrameContext& ctx);
 
@@ -52,6 +64,30 @@ struct Renderer
 	VkQueue vk_graphics_queue() const;
 	uint32_t swapchain_image_count() const;
 	VkRenderPass vk_render_pass() const;
+
+	// Heatmap toggle (controlled from ImGui)
+	bool showHeatmap_ = false;
+
+	// Debug line visualization toggle (controlled from ImGui)
+	bool showDebugLines_ = true;
+
+	// Debug toggles (controlled from ImGui)
+	bool debugSkipDepthPrepass_ = false;
+	bool debugDisableCulling_ = false;
+	int debugFrontFace_ = 0;  // 0=CCW, 1=CW
+
+	// Scene accessors (for selection / gizmo)
+	const std::vector<Mesh>& meshes() const { return meshes_; }
+	std::vector<Mesh>& meshes() { return meshes_; }
+	const glm::mat4& last_view() const { return lastView_; }
+	const glm::mat4& last_proj() const { return lastProj_; }
+
+	// Scene management
+	void load_scene(const std::string& modelPath);
+	void unload_scene();
+	void load_scene_empty();
+	void import_gltf(const std::string& path);
+	void delete_mesh(uint32_t meshIdx);
 
    private:
 	// Asset pack
@@ -82,15 +118,52 @@ struct Renderer
 	VkImage depthImage_ = VK_NULL_HANDLE;
 	VkDeviceMemory depthMemory_ = VK_NULL_HANDLE;
 	VkImageView depthView_ = VK_NULL_HANDLE;
+	VkSampler depthSampler_ = VK_NULL_HANDLE;
 
-	// Render pass
+	// Render passes
 	VkRenderPass renderPass_ = VK_NULL_HANDLE;
+	VkRenderPass depthOnlyRenderPass_ = VK_NULL_HANDLE;
+
+	// Depth pre-pass
+	VkFramebuffer depthOnlyFramebuffer_ = VK_NULL_HANDLE;
+	VkPipelineLayout depthPrepassPipelineLayout_ = VK_NULL_HANDLE;
+	VkPipeline depthPrepassPipeline_ = VK_NULL_HANDLE;
 
 	// PBR pipeline
 	VkDescriptorSetLayout frameSetLayout_ = VK_NULL_HANDLE;
 	VkDescriptorSetLayout materialSetLayout_ = VK_NULL_HANDLE;
+	VkDescriptorSetLayout lightDataSetLayout_ = VK_NULL_HANDLE;
 	VkPipelineLayout pbrPipelineLayout_ = VK_NULL_HANDLE;
 	VkPipeline pbrPipeline_ = VK_NULL_HANDLE;
+
+	// Light culling compute
+	VkPipelineLayout computePipelineLayout_ = VK_NULL_HANDLE;
+	VkPipeline lightCullPipeline_ = VK_NULL_HANDLE;
+
+	// Heatmap debug overlay
+	VkPipelineLayout heatmapPipelineLayout_ = VK_NULL_HANDLE;
+	VkPipeline heatmapPipeline_ = VK_NULL_HANDLE;
+
+	// Debug line visualization
+	VkPipelineLayout debugLinePipelineLayout_ = VK_NULL_HANDLE;
+	VkPipeline debugLinePipeline_ = VK_NULL_HANDLE;
+	VkBuffer debugLineVertexBuffers_[MAX_FRAMES_IN_FLIGHT] = {};
+	VkDeviceMemory debugLineVertexMemory_[MAX_FRAMES_IN_FLIGHT] = {};
+	void* debugLineVertexMapped_[MAX_FRAMES_IN_FLIGHT] = {};
+	uint32_t debugLineVertexCount_ = 0;
+
+	// Light / tile SSBOs (per frame-in-flight)
+	std::vector<VkBuffer> lightSSBOs_;
+	std::vector<VkDeviceMemory> lightSSBOMemory_;
+	std::vector<void*> lightSSBOMapped_;
+	std::vector<VkBuffer> tileLightSSBOs_;
+	std::vector<VkDeviceMemory> tileLightSSBOMemory_;
+	uint32_t tileCountX_ = 0;
+	uint32_t tileCountY_ = 0;
+
+	// Light data descriptors (per frame-in-flight)
+	VkDescriptorPool lightDescriptorPool_ = VK_NULL_HANDLE;
+	std::vector<VkDescriptorSet> lightDescriptorSets_;
 
 	// Framebuffers
 	std::vector<VkFramebuffer> framebuffers_;
@@ -111,14 +184,19 @@ struct Renderer
 	std::vector<Texture> textures_;
 	std::vector<Material> materials_;
 
-	// Frame UBO
+	// Frame UBO (Forward+)
 	struct FrameUBO
 	{
 		alignas(16) glm::mat4 view;
 		alignas(16) glm::mat4 proj;
+		alignas(16) glm::mat4 invProj;
 		alignas(16) glm::vec3 cameraPos;
-		alignas(16) glm::vec3 lightDir;
-		alignas(16) glm::vec3 lightColor;
+		alignas(4) uint32_t lightCount;
+		alignas(16) glm::vec3 ambientColor;
+		alignas(4) uint32_t tileCountX;
+		alignas(4) uint32_t tileCountY;
+		alignas(4) uint32_t screenWidth;
+		alignas(4) uint32_t screenHeight;
 	};
 	std::vector<VkBuffer> uniformBuffers_;
 	std::vector<VkDeviceMemory> uniformBuffersMemory_;
@@ -134,14 +212,14 @@ struct Renderer
 	std::vector<VkSemaphore> renderFinishedSemaphores_;
 	std::vector<VkFence> inFlightFences_;
 
+	// Cached view/proj for picking/gizmo
+	glm::mat4 lastView_{1.0f};
+	glm::mat4 lastProj_{1.0f};
+
 	// State
 	uint32_t currentFrame_ = 0;
 	bool framebufferResized_ = false;
 	char gpuName_[256] = {};
-
-	// Spinning cube
-	uint32_t cubeMeshIndex_ = 0;
-	uint32_t cubeMaterialIndex_ = 0;
 
 	// Vulkan setup
 	void create_instance();
@@ -166,7 +244,25 @@ struct Renderer
 	void create_uniform_buffers();
 	void create_frame_descriptor_pool();
 	void create_frame_descriptor_sets();
-	void load_scene(const std::string& modelPath);
+
+	// Forward+ setup
+	void create_depth_only_render_pass();
+	void create_depth_only_framebuffer();
+	void create_depth_prepass_pipeline();
+	void create_light_data_set_layout();
+	void create_light_buffers();
+	void create_light_descriptor_pool();
+	void create_light_descriptor_sets();
+	void create_compute_pipeline();
+	void create_heatmap_pipeline();
+	void create_debug_line_pipeline();
+	void create_debug_line_buffers();
+
+	// Forward+ per-frame
+	void draw_depth_prepass(VkCommandBuffer cmd);
+
+	// Scene helpers
+	void add_cube_to_scene(Scene& scene);
 
 	// Texture upload
 	void upload_texture(Texture& tex);
@@ -179,6 +275,7 @@ struct Renderer
 	// Material descriptors
 	void create_material_descriptor_pool(uint32_t materialCount);
 	void create_material_descriptor(Material& mat);
+	void rebuild_material_descriptors();
 
 	// Swapchain management
 	void recreate_swapchain();
@@ -201,4 +298,5 @@ struct Renderer
 	VkFormat find_depth_format();
 	VkShaderModule create_shader_module(const std::vector<char>& code);
 	void destroy_texture(Texture& tex);
+	void cleanup_light_buffers();
 };

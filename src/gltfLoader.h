@@ -2,6 +2,6 @@
 
 #include <string>
 
-#include "scene.h"
+#include "graphics/scene.h"
 
 Scene load_gltf(const std::string& path);

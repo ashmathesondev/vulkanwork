@@ -3,6 +3,7 @@
 #include "camera.h"
 #include "config.h"
 #include "cube.h"
+#include "debugLines.h"
 #include "gltfLoader.h"
 
 #define GLM_FORCE_RADIANS
@@ -117,10 +118,21 @@ void Renderer::init(GLFWwindow* window, const std::string& modelPath)
 	create_pbr_sampler();
 	create_default_textures();
 	create_pbr_descriptor_layouts();
+	create_light_data_set_layout();
+	create_depth_only_render_pass();
+	create_depth_only_framebuffer();
+	create_depth_prepass_pipeline();
 	create_pbr_pipeline();
+	create_compute_pipeline();
+	create_heatmap_pipeline();
+	create_debug_line_pipeline();
+	create_debug_line_buffers();
 	create_uniform_buffers();
 	create_frame_descriptor_pool();
 	create_frame_descriptor_sets();
+	create_light_buffers();
+	create_light_descriptor_pool();
+	create_light_descriptor_sets();
 	load_scene(modelPath);
 	create_command_buffers();
 	create_sync_objects();
@@ -137,6 +149,9 @@ void Renderer::cleanup()
 		vkFreeMemory(device_, uniformBuffersMemory_[i], nullptr);
 	}
 
+	// Light SSBOs
+	cleanup_light_buffers();
+
 	// Meshes
 	for (auto& m : meshes_)
 	{
@@ -146,21 +161,31 @@ void Renderer::cleanup()
 		vkFreeMemory(device_, m.indexMemory, nullptr);
 	}
 
+	// Material factor buffers
+	for (auto& m : materials_)
+	{
+		if (m.factorBuffer) vkDestroyBuffer(device_, m.factorBuffer, nullptr);
+		if (m.factorMemory) vkFreeMemory(device_, m.factorMemory, nullptr);
+	}
+
 	// Textures
 	for (auto& t : textures_) destroy_texture(t);
 	destroy_texture(defaultWhite_);
 	destroy_texture(defaultNormal_);
 
-	// Sampler
+	// Samplers
 	vkDestroySampler(device_, pbrSampler_, nullptr);
+	vkDestroySampler(device_, depthSampler_, nullptr);
 
 	// Descriptor pools
 	vkDestroyDescriptorPool(device_, materialDescriptorPool_, nullptr);
 	vkDestroyDescriptorPool(device_, frameDescriptorPool_, nullptr);
+	vkDestroyDescriptorPool(device_, lightDescriptorPool_, nullptr);
 
 	// Descriptor layouts
 	vkDestroyDescriptorSetLayout(device_, materialSetLayout_, nullptr);
 	vkDestroyDescriptorSetLayout(device_, frameSetLayout_, nullptr);
+	vkDestroyDescriptorSetLayout(device_, lightDataSetLayout_, nullptr);
 
 	// Sync
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
@@ -173,9 +198,31 @@ void Renderer::cleanup()
 
 	vkDestroyCommandPool(device_, commandPool_, nullptr);
 
+	// Debug line buffers
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	{
+		if (debugLineVertexBuffers_[i])
+		{
+			vkDestroyBuffer(device_, debugLineVertexBuffers_[i], nullptr);
+			vkFreeMemory(device_, debugLineVertexMemory_[i], nullptr);
+		}
+	}
+
+	// Pipelines
 	vkDestroyPipeline(device_, pbrPipeline_, nullptr);
 	vkDestroyPipelineLayout(device_, pbrPipelineLayout_, nullptr);
+	vkDestroyPipeline(device_, depthPrepassPipeline_, nullptr);
+	vkDestroyPipelineLayout(device_, depthPrepassPipelineLayout_, nullptr);
+	vkDestroyPipeline(device_, lightCullPipeline_, nullptr);
+	vkDestroyPipelineLayout(device_, computePipelineLayout_, nullptr);
+	vkDestroyPipeline(device_, heatmapPipeline_, nullptr);
+	vkDestroyPipelineLayout(device_, heatmapPipelineLayout_, nullptr);
+	vkDestroyPipeline(device_, debugLinePipeline_, nullptr);
+	vkDestroyPipelineLayout(device_, debugLinePipelineLayout_, nullptr);
+
+	// Render passes
 	vkDestroyRenderPass(device_, renderPass_, nullptr);
+	vkDestroyRenderPass(device_, depthOnlyRenderPass_, nullptr);
 
 	vkDestroyDevice(device_, nullptr);
 
@@ -220,6 +267,87 @@ std::optional<Renderer::FrameContext> Renderer::begin_frame()
 		VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
 	VK_CHECK(vkBeginCommandBuffer(cmd, &beginInfo));
 
+	// ---- 1. Depth pre-pass ----
+	if (!debugSkipDepthPrepass_)
+		draw_depth_prepass(cmd);
+	else
+	{
+		// Still need to transition depth image for compute read
+		// Do a clear + transition via a minimal render pass
+		VkClearValue clear{};
+		clear.depthStencil = {1.0f, 0};
+		VkRenderPassBeginInfo rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+		rpInfo.renderPass = depthOnlyRenderPass_;
+		rpInfo.framebuffer = depthOnlyFramebuffer_;
+		rpInfo.renderArea = {{0, 0}, swapchainExtent_};
+		rpInfo.clearValueCount = 1;
+		rpInfo.pClearValues = &clear;
+		vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
+		vkCmdEndRenderPass(cmd);
+	}
+
+	// ---- 2. Barrier: depth attachment -> shader read for compute ----
+	{
+		VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+		barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = depthImage_;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		barrier.subresourceRange.baseMipLevel = 0;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.baseArrayLayer = 0;
+		barrier.subresourceRange.layerCount = 1;
+		barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+							 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+							 nullptr, 0, nullptr, 1, &barrier);
+	}
+
+	// ---- 3. Light culling compute dispatch ----
+	{
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+						  lightCullPipeline_);
+		VkDescriptorSet compSets[] = {frameDescriptorSets_[currentFrame_],
+									  lightDescriptorSets_[currentFrame_]};
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+								computePipelineLayout_, 0, 2, compSets, 0,
+								nullptr);
+		vkCmdDispatch(cmd, tileCountX_, tileCountY_, 1);
+	}
+
+	// ---- 4. Barriers: compute -> fragment (SSBO + depth back) ----
+	{
+		VkMemoryBarrier memBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+		memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+		VkImageMemoryBarrier depthBarrier{
+			VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+		depthBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		depthBarrier.newLayout =
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		depthBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		depthBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		depthBarrier.image = depthImage_;
+		depthBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		depthBarrier.subresourceRange.baseMipLevel = 0;
+		depthBarrier.subresourceRange.levelCount = 1;
+		depthBarrier.subresourceRange.baseArrayLayer = 0;
+		depthBarrier.subresourceRange.layerCount = 1;
+		depthBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		depthBarrier.dstAccessMask =
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+							 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+								 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+							 0, 1, &memBarrier, 0, nullptr, 1, &depthBarrier);
+	}
+
+	// ---- 5. Begin main shading render pass (depth loadOp=LOAD) ----
 	std::array<VkClearValue, 2> clears{};
 	clears[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};
 	clears[1].depthStencil = {1.0f, 0};
@@ -247,7 +375,8 @@ std::optional<Renderer::FrameContext> Renderer::begin_frame()
 	return FrameContext{cmd, imageIndex};
 }
 
-void Renderer::update_uniforms(const Camera& camera, float time)
+void Renderer::update_uniforms(const Camera& camera, float time,
+							   const LightEnvironment& lights)
 {
 	FrameUBO ubo{};
 	ubo.view = camera.view_matrix();
@@ -257,22 +386,30 @@ void Renderer::update_uniforms(const Camera& camera, float time)
 	ubo.proj = glm::perspective(glm::radians(camera.fov), aspect, 0.1f, 100.0f);
 	ubo.proj[1][1] *= -1.0f;  // Vulkan Y-flip
 
+	// Cache for picking / gizmo (store un-flipped proj for ImGuizmo)
+	lastView_ = ubo.view;
+	lastProj_ =
+		glm::perspective(glm::radians(camera.fov), aspect, 0.1f, 100.0f);
+	ubo.invProj = glm::inverse(ubo.proj);
+
 	ubo.cameraPos = camera.position;
-	ubo.lightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.3f));
-	ubo.lightColor = glm::vec3(3.0f);
+	ubo.lightCount = lights.total_light_count();
+	ubo.ambientColor = lights.ambient.color * lights.ambient.intensity;
+	ubo.tileCountX = tileCountX_;
+	ubo.tileCountY = tileCountY_;
+	ubo.screenWidth = swapchainExtent_.width;
+	ubo.screenHeight = swapchainExtent_.height;
 
 	std::memcpy(uniformBuffersMapped_[currentFrame_], &ubo, sizeof(ubo));
 
-	// Spin the cube
-	if (cubeMeshIndex_ < meshes_.size())
+	// Upload light SSBO
+	auto gpuLights = lights.pack_gpu_lights();
+	uint32_t count = static_cast<uint32_t>(gpuLights.size());
+	if (count > MAX_LIGHTS) count = MAX_LIGHTS;
+	if (count > 0)
 	{
-		glm::mat4 m =
-			glm::translate(glm::mat4(1.0f), glm::vec3(-3.0f, 0.0f, 0.0f));
-		m = glm::rotate(m, time * glm::radians(45.0f),
-						glm::vec3(0.0f, 1.0f, 0.0f));
-		m = glm::rotate(m, time * glm::radians(30.0f),
-						glm::vec3(1.0f, 0.0f, 0.0f));
-		meshes_[cubeMeshIndex_].transform = m;
+		std::memcpy(lightSSBOMapped_[currentFrame_], gpuLights.data(),
+					count * sizeof(GPULight));
 	}
 }
 
@@ -280,10 +417,22 @@ void Renderer::draw_scene(VkCommandBuffer cmd)
 {
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pbrPipeline_);
 
+	// Dynamic rasterizer state (debug toggles)
+	vkCmdSetCullMode(
+		cmd, debugDisableCulling_ ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+	vkCmdSetFrontFace(cmd, debugFrontFace_ == 1
+							   ? VK_FRONT_FACE_CLOCKWISE
+							   : VK_FRONT_FACE_COUNTER_CLOCKWISE);
+
 	// Bind frame descriptor set (set 0)
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
 							pbrPipelineLayout_, 0, 1,
 							&frameDescriptorSets_[currentFrame_], 0, nullptr);
+
+	// Bind light data descriptor set (set 2)
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+							pbrPipelineLayout_, 2, 1,
+							&lightDescriptorSets_[currentFrame_], 0, nullptr);
 
 	for (const auto& mesh : meshes_)
 	{
@@ -305,6 +454,34 @@ void Renderer::draw_scene(VkCommandBuffer cmd)
 		vkCmdBindIndexBuffer(cmd, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 		vkCmdDrawIndexed(cmd, static_cast<uint32_t>(mesh.indices.size()), 1, 0,
 						 0, 0);
+	}
+
+	// Heatmap debug overlay
+	if (showHeatmap_)
+	{
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+						  heatmapPipeline_);
+		vkCmdBindDescriptorSets(
+			cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, heatmapPipelineLayout_, 0, 1,
+			&frameDescriptorSets_[currentFrame_], 0, nullptr);
+		vkCmdBindDescriptorSets(
+			cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, heatmapPipelineLayout_, 1, 1,
+			&lightDescriptorSets_[currentFrame_], 0, nullptr);
+		vkCmdDraw(cmd, 3, 1, 0, 0);
+	}
+
+	// Debug light wireframes
+	if (showDebugLines_ && debugLineVertexCount_ > 0)
+	{
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+						  debugLinePipeline_);
+		vkCmdBindDescriptorSets(
+			cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, debugLinePipelineLayout_, 0,
+			1, &frameDescriptorSets_[currentFrame_], 0, nullptr);
+		VkBuffer vbufs[] = {debugLineVertexBuffers_[currentFrame_]};
+		VkDeviceSize offs[] = {0};
+		vkCmdBindVertexBuffers(cmd, 0, 1, vbufs, offs);
+		vkCmdDraw(cmd, debugLineVertexCount_, 1, 0, 0);
 	}
 }
 
@@ -626,7 +803,14 @@ void Renderer::recreate_swapchain()
 	create_swapchain();
 	create_image_views();
 	create_depth_resources();
+	create_depth_only_framebuffer();
 	create_framebuffers();
+
+	// Recreate tile light SSBOs (size depends on resolution)
+	cleanup_light_buffers();
+	create_light_buffers();
+	create_light_descriptor_pool();
+	create_light_descriptor_sets();
 
 	VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 	renderFinishedSemaphores_.resize(swapchainImages_.size());
@@ -637,6 +821,10 @@ void Renderer::recreate_swapchain()
 
 void Renderer::cleanup_swapchain()
 {
+	if (depthOnlyFramebuffer_)
+		vkDestroyFramebuffer(device_, depthOnlyFramebuffer_, nullptr);
+	depthOnlyFramebuffer_ = VK_NULL_HANDLE;
+
 	vkDestroyImageView(device_, depthView_, nullptr);
 	vkDestroyImage(device_, depthImage_, nullptr);
 	vkFreeMemory(device_, depthMemory_, nullptr);
@@ -665,11 +853,12 @@ void Renderer::create_render_pass()
 	VkAttachmentDescription depthAtt{};
 	depthAtt.format = find_depth_format();
 	depthAtt.samples = VK_SAMPLE_COUNT_1_BIT;
-	depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	depthAtt.loadOp =
+		VK_ATTACHMENT_LOAD_OP_CLEAR;  // main pass does its own depth test
 	depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 	depthAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	depthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	depthAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	depthAtt.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 	depthAtt.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
 	VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
@@ -729,9 +918,9 @@ void Renderer::create_pbr_descriptor_layouts()
 											 &frameSetLayout_));
 	}
 
-	// Set 1: per-material (4 combined image samplers)
+	// Set 1: per-material (4 combined image samplers + 1 UBO for factors)
 	{
-		std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+		std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
 		for (uint32_t i = 0; i < 4; ++i)
 		{
 			bindings[i].binding = i;
@@ -740,6 +929,11 @@ void Renderer::create_pbr_descriptor_layouts()
 			bindings[i].descriptorCount = 1;
 			bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 		}
+		// Binding 4: material factors UBO
+		bindings[4].binding = 4;
+		bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		bindings[4].descriptorCount = 1;
+		bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 		VkDescriptorSetLayoutCreateInfo ci{
 			VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -819,15 +1013,17 @@ void Renderer::create_pbr_pipeline()
 	blend.attachmentCount = 1;
 	blend.pAttachments = &blendAtt;
 
-	VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT,
-								  VK_DYNAMIC_STATE_SCISSOR};
+	VkDynamicState dynStates[] = {
+		VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+		VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE};
 	VkPipelineDynamicStateCreateInfo dyn{
 		VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-	dyn.dynamicStateCount = 2;
+	dyn.dynamicStateCount = 4;
 	dyn.pDynamicStates = dynStates;
 
-	// Pipeline layout: set 0 = frame, set 1 = material, push constant = model
-	VkDescriptorSetLayout setLayouts[] = {frameSetLayout_, materialSetLayout_};
+	// Pipeline layout: set 0=frame, set 1=material, set 2=lightData, push=model
+	VkDescriptorSetLayout setLayouts[] = {frameSetLayout_, materialSetLayout_,
+										  lightDataSetLayout_};
 
 	VkPushConstantRange pushRange{};
 	pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
@@ -836,7 +1032,7 @@ void Renderer::create_pbr_pipeline()
 
 	VkPipelineLayoutCreateInfo layoutCI{
 		VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-	layoutCI.setLayoutCount = 2;
+	layoutCI.setLayoutCount = 3;
 	layoutCI.pSetLayouts = setLayouts;
 	layoutCI.pushConstantRangeCount = 1;
 	layoutCI.pPushConstantRanges = &pushRange;
@@ -1176,14 +1372,17 @@ void Renderer::create_material_descriptor_pool(uint32_t materialCount)
 {
 	if (materialCount == 0) materialCount = 1;
 
-	VkDescriptorPoolSize poolSize{};
-	poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSize.descriptorCount = materialCount * 4;  // 4 samplers per material
+	std::array<VkDescriptorPoolSize, 2> poolSizes{};
+	poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	poolSizes[0].descriptorCount =
+		materialCount * 4;	// 4 samplers per material
+	poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	poolSizes[1].descriptorCount = materialCount;  // 1 factor UBO per material
 
 	VkDescriptorPoolCreateInfo ci{
 		VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-	ci.poolSizeCount = 1;
-	ci.pPoolSizes = &poolSize;
+	ci.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+	ci.pPoolSizes = poolSizes.data();
 	ci.maxSets = materialCount;
 	VK_CHECK(vkCreateDescriptorPool(device_, &ci, nullptr,
 									&materialDescriptorPool_));
@@ -1197,6 +1396,25 @@ void Renderer::create_material_descriptor(Material& mat)
 	ai.descriptorSetCount = 1;
 	ai.pSetLayouts = &materialSetLayout_;
 	VK_CHECK(vkAllocateDescriptorSets(device_, &ai, &mat.descriptorSet));
+
+	// Create factor UBO
+	MaterialFactorsGPU factors{};
+	factors.baseColorFactor = mat.baseColorFactor;
+	factors.metallicFactor = mat.metallicFactor;
+	factors.roughnessFactor = mat.roughnessFactor;
+	factors.emissiveFactor = glm::vec4(mat.emissiveFactor, 0.0f);
+
+	create_buffer(sizeof(MaterialFactorsGPU),
+				  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+				  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+					  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				  mat.factorBuffer, mat.factorMemory);
+
+	void* data;
+	vkMapMemory(device_, mat.factorMemory, 0, sizeof(MaterialFactorsGPU), 0,
+				&data);
+	std::memcpy(data, &factors, sizeof(MaterialFactorsGPU));
+	vkUnmapMemory(device_, mat.factorMemory);
 
 	auto get_view = [&](int32_t texIndex,
 						const Texture& fallback) -> VkImageView
@@ -1225,7 +1443,10 @@ void Renderer::create_material_descriptor(Material& mat)
 	imageInfos[3].imageView = get_view(mat.emissiveTexture, defaultWhite_);
 	imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-	std::array<VkWriteDescriptorSet, 4> writes{};
+	VkDescriptorBufferInfo factorBufInfo{mat.factorBuffer, 0,
+										 sizeof(MaterialFactorsGPU)};
+
+	std::array<VkWriteDescriptorSet, 5> writes{};
 	for (uint32_t i = 0; i < 4; ++i)
 	{
 		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1235,6 +1456,13 @@ void Renderer::create_material_descriptor(Material& mat)
 		writes[i].descriptorCount = 1;
 		writes[i].pImageInfo = &imageInfos[i];
 	}
+	// Binding 4: material factors UBO
+	writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[4].dstSet = mat.descriptorSet;
+	writes[4].dstBinding = 4;
+	writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	writes[4].descriptorCount = 1;
+	writes[4].pBufferInfo = &factorBufInfo;
 
 	vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()),
 						   writes.data(), 0, nullptr);
@@ -1309,13 +1537,8 @@ void Renderer::create_frame_descriptor_sets()
 // Scene loading
 // =============================================================================
 
-void Renderer::load_scene(const std::string& modelPath)
+void Renderer::add_cube_to_scene(Scene& scene)
 {
-	Scene scene = load_gltf(modelPath);
-
-	// Upload glTF textures in-place
-	for (auto& tex : scene.textures) upload_texture(tex);
-
 	// Load the BlueGrid texture from the pack file for the cube
 	{
 		auto png = packFile_->read("textures/grids/1024/BlueGrid.png");
@@ -1346,16 +1569,28 @@ void Renderer::load_scene(const std::string& modelPath)
 	cubeMat.roughnessFactor = 0.5f;
 	scene.materials.push_back(cubeMat);
 
+	// Append cube mesh
+	Mesh cube = make_cube_mesh();
+	cube.name = "Cube";
+	cube.materialIndex = cubeMaterialIdx;
+	cube.transform =
+		glm::translate(glm::mat4(1.0f), glm::vec3(-3.0f, 0.0f, 0.0f));
+	upload_mesh(cube);
+	scene.meshes.push_back(std::move(cube));
+}
+
+void Renderer::load_scene(const std::string& modelPath)
+{
+	Scene scene = load_gltf(modelPath);
+
+	// Upload glTF textures in-place
+	for (auto& tex : scene.textures) upload_texture(tex);
+
 	// Upload glTF meshes in-place
 	for (auto& mesh : scene.meshes) upload_mesh(mesh);
 
-	// Append spinning cube mesh
-	Mesh cube = make_cube_mesh();
-	cube.materialIndex = cubeMaterialIdx;
-	cubeMeshIndex_ = static_cast<uint32_t>(scene.meshes.size());
-	cubeMaterialIndex_ = cubeMaterialIdx;
-	upload_mesh(cube);
-	scene.meshes.push_back(std::move(cube));
+	// Add the cube (BlueGrid texture + material + mesh)
+	add_cube_to_scene(scene);
 
 	// Move scene data into renderer members
 	textures_ = std::move(scene.textures);
@@ -1366,6 +1601,251 @@ void Renderer::load_scene(const std::string& modelPath)
 		static_cast<uint32_t>(scene.materials.size()));
 	for (auto& mat : scene.materials) create_material_descriptor(mat);
 	materials_ = std::move(scene.materials);
+}
+
+void Renderer::unload_scene()
+{
+	vkDeviceWaitIdle(device_);
+
+	// Free mesh GPU buffers
+	for (auto& m : meshes_)
+	{
+		vkDestroyBuffer(device_, m.vertexBuffer, nullptr);
+		vkFreeMemory(device_, m.vertexMemory, nullptr);
+		vkDestroyBuffer(device_, m.indexBuffer, nullptr);
+		vkFreeMemory(device_, m.indexMemory, nullptr);
+	}
+	meshes_.clear();
+
+	// Free material factor buffers
+	for (auto& m : materials_)
+	{
+		if (m.factorBuffer) vkDestroyBuffer(device_, m.factorBuffer, nullptr);
+		if (m.factorMemory) vkFreeMemory(device_, m.factorMemory, nullptr);
+	}
+	materials_.clear();
+
+	// Free scene textures (but not default textures)
+	for (auto& t : textures_) destroy_texture(t);
+	textures_.clear();
+
+	// Destroy material descriptor pool
+	if (materialDescriptorPool_)
+	{
+		vkDestroyDescriptorPool(device_, materialDescriptorPool_, nullptr);
+		materialDescriptorPool_ = VK_NULL_HANDLE;
+	}
+}
+
+void Renderer::load_scene_empty()
+{
+	Scene scene;
+
+	// Add the cube (BlueGrid texture + material + mesh)
+	add_cube_to_scene(scene);
+
+	// Move scene data into renderer members
+	textures_ = std::move(scene.textures);
+	meshes_ = std::move(scene.meshes);
+
+	// Create material descriptors
+	create_material_descriptor_pool(
+		static_cast<uint32_t>(scene.materials.size()));
+	for (auto& mat : scene.materials) create_material_descriptor(mat);
+	materials_ = std::move(scene.materials);
+}
+
+// =============================================================================
+// Import / Delete / Rebuild helpers
+// =============================================================================
+
+void Renderer::import_gltf(const std::string& path)
+{
+	vkDeviceWaitIdle(device_);
+
+	Scene scene = load_gltf(path);
+
+	uint32_t texOffset = static_cast<uint32_t>(textures_.size());
+	uint32_t matOffset = static_cast<uint32_t>(materials_.size());
+
+	// Upload and append textures
+	for (auto& tex : scene.textures) upload_texture(tex);
+	textures_.insert(textures_.end(),
+					 std::make_move_iterator(scene.textures.begin()),
+					 std::make_move_iterator(scene.textures.end()));
+
+	// Offset material texture indices, then append
+	for (auto& mat : scene.materials)
+	{
+		if (mat.baseColorTexture >= 0)
+			mat.baseColorTexture += static_cast<int32_t>(texOffset);
+		if (mat.metallicRoughnessTexture >= 0)
+			mat.metallicRoughnessTexture += static_cast<int32_t>(texOffset);
+		if (mat.normalTexture >= 0)
+			mat.normalTexture += static_cast<int32_t>(texOffset);
+		if (mat.emissiveTexture >= 0)
+			mat.emissiveTexture += static_cast<int32_t>(texOffset);
+	}
+
+	// Offset mesh material indices, upload, then append
+	for (auto& mesh : scene.meshes)
+	{
+		mesh.materialIndex += matOffset;
+		upload_mesh(mesh);
+	}
+	meshes_.insert(meshes_.end(), std::make_move_iterator(scene.meshes.begin()),
+				   std::make_move_iterator(scene.meshes.end()));
+
+	// Append materials (without GPU descriptors yet)
+	materials_.insert(materials_.end(),
+					  std::make_move_iterator(scene.materials.begin()),
+					  std::make_move_iterator(scene.materials.end()));
+
+	rebuild_material_descriptors();
+}
+
+void Renderer::delete_mesh(uint32_t meshIdx)
+{
+	if (meshIdx >= meshes_.size()) return;
+
+	vkDeviceWaitIdle(device_);
+
+	// 1. Destroy mesh GPU buffers and erase
+	auto& mesh = meshes_[meshIdx];
+	vkDestroyBuffer(device_, mesh.vertexBuffer, nullptr);
+	vkFreeMemory(device_, mesh.vertexMemory, nullptr);
+	vkDestroyBuffer(device_, mesh.indexBuffer, nullptr);
+	vkFreeMemory(device_, mesh.indexMemory, nullptr);
+
+	uint32_t deletedMatIdx = mesh.materialIndex;
+	meshes_.erase(meshes_.begin() + meshIdx);
+
+	// 2. Fix up remaining mesh materialIndex for the erased mesh's shift
+	//    (materialIndex doesn't shift yet — we handle that after removing mats)
+
+	// 3. Collect unreferenced material indices
+	std::vector<bool> matReferenced(materials_.size(), false);
+	for (const auto& m : meshes_) matReferenced[m.materialIndex] = true;
+
+	// Collect unreferenced texture indices from unreferenced materials
+	std::vector<bool> texReferencedByUnrefMat(textures_.size(), false);
+	for (uint32_t i = 0; i < materials_.size(); ++i)
+	{
+		if (!matReferenced[i])
+		{
+			auto markTex = [&](int32_t idx)
+			{
+				if (idx >= 0 && idx < static_cast<int32_t>(textures_.size()))
+					texReferencedByUnrefMat[idx] = true;
+			};
+			markTex(materials_[i].baseColorTexture);
+			markTex(materials_[i].metallicRoughnessTexture);
+			markTex(materials_[i].normalTexture);
+			markTex(materials_[i].emissiveTexture);
+		}
+	}
+
+	// 4. Destroy unreferenced materials (reverse order to keep indices valid)
+	std::vector<uint32_t> removedMatIndices;
+	for (int32_t i = static_cast<int32_t>(materials_.size()) - 1; i >= 0; --i)
+	{
+		if (!matReferenced[i])
+		{
+			if (materials_[i].factorBuffer)
+				vkDestroyBuffer(device_, materials_[i].factorBuffer, nullptr);
+			if (materials_[i].factorMemory)
+				vkFreeMemory(device_, materials_[i].factorMemory, nullptr);
+			materials_.erase(materials_.begin() + i);
+			removedMatIndices.push_back(static_cast<uint32_t>(i));
+		}
+	}
+
+	// 5. Check which textures referenced by removed materials are truly
+	//    unreferenced (not used by any remaining material)
+	std::vector<bool> texReferenced(texReferencedByUnrefMat.size(), false);
+	for (const auto& mat : materials_)
+	{
+		auto markTex = [&](int32_t idx)
+		{
+			if (idx >= 0 && idx < static_cast<int32_t>(texReferenced.size()))
+				texReferenced[idx] = true;
+		};
+		markTex(mat.baseColorTexture);
+		markTex(mat.metallicRoughnessTexture);
+		markTex(mat.normalTexture);
+		markTex(mat.emissiveTexture);
+	}
+
+	// Destroy unreferenced textures (reverse order)
+	std::vector<uint32_t> removedTexIndices;
+	for (int32_t i = static_cast<int32_t>(texReferencedByUnrefMat.size()) - 1;
+		 i >= 0; --i)
+	{
+		if (texReferencedByUnrefMat[i] && !texReferenced[i])
+		{
+			destroy_texture(textures_[i]);
+			textures_.erase(textures_.begin() + i);
+			removedTexIndices.push_back(static_cast<uint32_t>(i));
+		}
+	}
+
+	// 6. Fix up material indices in remaining meshes
+	for (auto& m : meshes_)
+	{
+		uint32_t shift = 0;
+		for (uint32_t removed : removedMatIndices)
+			if (removed <= m.materialIndex) ++shift;
+		m.materialIndex -= shift;
+	}
+
+	// 7. Fix up texture indices in remaining materials
+	for (auto& mat : materials_)
+	{
+		auto fixTex = [&](int32_t& idx)
+		{
+			if (idx < 0) return;
+			uint32_t shift = 0;
+			for (uint32_t removed : removedTexIndices)
+				if (removed <= static_cast<uint32_t>(idx)) ++shift;
+			idx -= static_cast<int32_t>(shift);
+		};
+		fixTex(mat.baseColorTexture);
+		fixTex(mat.metallicRoughnessTexture);
+		fixTex(mat.normalTexture);
+		fixTex(mat.emissiveTexture);
+	}
+
+	rebuild_material_descriptors();
+}
+
+void Renderer::rebuild_material_descriptors()
+{
+	// Destroy old factor buffers and descriptor pool
+	for (auto& mat : materials_)
+	{
+		if (mat.factorBuffer)
+		{
+			vkDestroyBuffer(device_, mat.factorBuffer, nullptr);
+			mat.factorBuffer = VK_NULL_HANDLE;
+		}
+		if (mat.factorMemory)
+		{
+			vkFreeMemory(device_, mat.factorMemory, nullptr);
+			mat.factorMemory = VK_NULL_HANDLE;
+		}
+		mat.descriptorSet = VK_NULL_HANDLE;
+	}
+
+	if (materialDescriptorPool_)
+	{
+		vkDestroyDescriptorPool(device_, materialDescriptorPool_, nullptr);
+		materialDescriptorPool_ = VK_NULL_HANDLE;
+	}
+
+	if (materials_.empty()) return;
+
+	create_material_descriptor_pool(static_cast<uint32_t>(materials_.size()));
+	for (auto& mat : materials_) create_material_descriptor(mat);
 }
 
 // =============================================================================
@@ -1384,7 +1864,8 @@ void Renderer::create_depth_resources()
 	imgCI.arrayLayers = 1;
 	imgCI.samples = VK_SAMPLE_COUNT_1_BIT;
 	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
-	imgCI.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	imgCI.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+				  VK_IMAGE_USAGE_SAMPLED_BIT;
 	VK_CHECK(vkCreateImage(device_, &imgCI, nullptr, &depthImage_));
 
 	VkMemoryRequirements memReq;
@@ -1398,6 +1879,19 @@ void Renderer::create_depth_resources()
 
 	depthView_ =
 		create_image_view(depthImage_, depthFmt, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+	// Depth sampler (nearest, clamp-to-edge) for compute light culling
+	if (depthSampler_ == VK_NULL_HANDLE)
+	{
+		VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+		sci.magFilter = VK_FILTER_NEAREST;
+		sci.minFilter = VK_FILTER_NEAREST;
+		sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		VK_CHECK(vkCreateSampler(device_, &sci, nullptr, &depthSampler_));
+	}
 }
 
 // =============================================================================
@@ -1580,7 +2074,8 @@ VkFormat Renderer::find_depth_format()
 		{VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT,
 		 VK_FORMAT_D24_UNORM_S8_UINT},
 		VK_IMAGE_TILING_OPTIMAL,
-		VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+		VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+			VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
 }
 
 VkShaderModule Renderer::create_shader_module(const std::vector<char>& code)
@@ -1592,6 +2087,673 @@ VkShaderModule Renderer::create_shader_module(const std::vector<char>& code)
 	VK_CHECK(vkCreateShaderModule(device_, &ci, nullptr, &mod));
 	return mod;
 }
+
+// =============================================================================
+// Forward+ : Depth-only render pass
+// =============================================================================
+
+void Renderer::create_depth_only_render_pass()
+{
+	VkAttachmentDescription depthAtt{};
+	depthAtt.format = find_depth_format();
+	depthAtt.samples = VK_SAMPLE_COUNT_1_BIT;
+	depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	depthAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	depthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	depthAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	depthAtt.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+	VkAttachmentReference depthRef{
+		0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+	VkSubpassDescription subpass{};
+	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	subpass.colorAttachmentCount = 0;
+	subpass.pDepthStencilAttachment = &depthRef;
+
+	VkSubpassDependency dep{};
+	dep.srcSubpass = VK_SUBPASS_EXTERNAL;
+	dep.dstSubpass = 0;
+	dep.srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+					   VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+	dep.srcAccessMask = 0;
+	dep.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+					   VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+	dep.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+	VkRenderPassCreateInfo ci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+	ci.attachmentCount = 1;
+	ci.pAttachments = &depthAtt;
+	ci.subpassCount = 1;
+	ci.pSubpasses = &subpass;
+	ci.dependencyCount = 1;
+	ci.pDependencies = &dep;
+
+	VK_CHECK(vkCreateRenderPass(device_, &ci, nullptr, &depthOnlyRenderPass_));
+}
+
+void Renderer::create_depth_only_framebuffer()
+{
+	VkFramebufferCreateInfo ci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+	ci.renderPass = depthOnlyRenderPass_;
+	ci.attachmentCount = 1;
+	ci.pAttachments = &depthView_;
+	ci.width = swapchainExtent_.width;
+	ci.height = swapchainExtent_.height;
+	ci.layers = 1;
+	VK_CHECK(
+		vkCreateFramebuffer(device_, &ci, nullptr, &depthOnlyFramebuffer_));
+}
+
+void Renderer::create_depth_prepass_pipeline()
+{
+	auto vertCode = packFile_->read("shaders/pbr.vert.spv");
+	VkShaderModule vertMod = create_shader_module(vertCode);
+
+	VkPipelineShaderStageCreateInfo stage{
+		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+	stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+	stage.module = vertMod;
+	stage.pName = "main";
+
+	auto bindDesc = Vertex::binding_desc();
+	auto attDescs = Vertex::attrib_descs();
+
+	VkPipelineVertexInputStateCreateInfo vertInput{
+		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+	vertInput.vertexBindingDescriptionCount = 1;
+	vertInput.pVertexBindingDescriptions = &bindDesc;
+	vertInput.vertexAttributeDescriptionCount =
+		static_cast<uint32_t>(attDescs.size());
+	vertInput.pVertexAttributeDescriptions = attDescs.data();
+
+	VkPipelineInputAssemblyStateCreateInfo inputAsm{
+		VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+	inputAsm.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+	VkPipelineViewportStateCreateInfo vpState{
+		VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+	vpState.viewportCount = 1;
+	vpState.scissorCount = 1;
+
+	VkPipelineRasterizationStateCreateInfo raster{
+		VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+	raster.polygonMode = VK_POLYGON_MODE_FILL;
+	raster.lineWidth = 1.0f;
+	raster.cullMode = VK_CULL_MODE_BACK_BIT;
+	raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+	VkPipelineMultisampleStateCreateInfo ms{
+		VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+	VkPipelineDepthStencilStateCreateInfo ds{
+		VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+	ds.depthTestEnable = VK_TRUE;
+	ds.depthWriteEnable = VK_TRUE;
+	ds.depthCompareOp = VK_COMPARE_OP_LESS;
+
+	VkPipelineColorBlendStateCreateInfo blend{
+		VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+	blend.attachmentCount = 0;	// no color attachments
+
+	VkDynamicState dynStates[] = {
+		VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+		VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE};
+	VkPipelineDynamicStateCreateInfo dyn{
+		VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+	dyn.dynamicStateCount = 4;
+	dyn.pDynamicStates = dynStates;
+
+	// Layout: set 0 = frame UBO, push constant = model matrix
+	VkPushConstantRange pushRange{};
+	pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	pushRange.offset = 0;
+	pushRange.size = sizeof(glm::mat4);
+
+	VkPipelineLayoutCreateInfo layoutCI{
+		VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+	layoutCI.setLayoutCount = 1;
+	layoutCI.pSetLayouts = &frameSetLayout_;
+	layoutCI.pushConstantRangeCount = 1;
+	layoutCI.pPushConstantRanges = &pushRange;
+	VK_CHECK(vkCreatePipelineLayout(device_, &layoutCI, nullptr,
+									&depthPrepassPipelineLayout_));
+
+	VkGraphicsPipelineCreateInfo ci{
+		VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+	ci.stageCount = 1;	// vertex only
+	ci.pStages = &stage;
+	ci.pVertexInputState = &vertInput;
+	ci.pInputAssemblyState = &inputAsm;
+	ci.pViewportState = &vpState;
+	ci.pRasterizationState = &raster;
+	ci.pMultisampleState = &ms;
+	ci.pDepthStencilState = &ds;
+	ci.pColorBlendState = &blend;
+	ci.pDynamicState = &dyn;
+	ci.layout = depthPrepassPipelineLayout_;
+	ci.renderPass = depthOnlyRenderPass_;
+	ci.subpass = 0;
+
+	VK_CHECK(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr,
+									   &depthPrepassPipeline_));
+
+	vkDestroyShaderModule(device_, vertMod, nullptr);
+}
+
+void Renderer::draw_depth_prepass(VkCommandBuffer cmd)
+{
+	VkClearValue clear{};
+	clear.depthStencil = {1.0f, 0};
+
+	VkRenderPassBeginInfo rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+	rpInfo.renderPass = depthOnlyRenderPass_;
+	rpInfo.framebuffer = depthOnlyFramebuffer_;
+	rpInfo.renderArea = {{0, 0}, swapchainExtent_};
+	rpInfo.clearValueCount = 1;
+	rpInfo.pClearValues = &clear;
+
+	vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+	VkViewport vp{0,
+				  0,
+				  static_cast<float>(swapchainExtent_.width),
+				  static_cast<float>(swapchainExtent_.height),
+				  0.0f,
+				  1.0f};
+	vkCmdSetViewport(cmd, 0, 1, &vp);
+
+	VkRect2D scissor{{0, 0}, swapchainExtent_};
+	vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+					  depthPrepassPipeline_);
+
+	// Dynamic rasterizer state (debug toggles)
+	vkCmdSetCullMode(
+		cmd, debugDisableCulling_ ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+	vkCmdSetFrontFace(cmd, debugFrontFace_ == 1
+							   ? VK_FRONT_FACE_CLOCKWISE
+							   : VK_FRONT_FACE_COUNTER_CLOCKWISE);
+
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+							depthPrepassPipelineLayout_, 0, 1,
+							&frameDescriptorSets_[currentFrame_], 0, nullptr);
+
+	for (const auto& mesh : meshes_)
+	{
+		vkCmdPushConstants(cmd, depthPrepassPipelineLayout_,
+						   VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4),
+						   &mesh.transform);
+
+		VkBuffer vbufs[] = {mesh.vertexBuffer};
+		VkDeviceSize offs[] = {0};
+		vkCmdBindVertexBuffers(cmd, 0, 1, vbufs, offs);
+		vkCmdBindIndexBuffer(cmd, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+		vkCmdDrawIndexed(cmd, static_cast<uint32_t>(mesh.indices.size()), 1, 0,
+						 0, 0);
+	}
+
+	vkCmdEndRenderPass(cmd);
+}
+
+// =============================================================================
+// Forward+ : Light data descriptor set layout
+// =============================================================================
+
+void Renderer::create_light_data_set_layout()
+{
+	std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
+	// binding 0: GPULight[] SSBO
+	bindings[0].binding = 0;
+	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bindings[0].descriptorCount = 1;
+	bindings[0].stageFlags =
+		VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+	// binding 1: tile light indices SSBO
+	bindings[1].binding = 1;
+	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bindings[1].descriptorCount = 1;
+	bindings[1].stageFlags =
+		VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+	// binding 2: depth texture (for compute culling)
+	bindings[2].binding = 2;
+	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[2].descriptorCount = 1;
+	bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	VkDescriptorSetLayoutCreateInfo ci{
+		VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+	ci.bindingCount = static_cast<uint32_t>(bindings.size());
+	ci.pBindings = bindings.data();
+	VK_CHECK(vkCreateDescriptorSetLayout(device_, &ci, nullptr,
+										 &lightDataSetLayout_));
+}
+
+// =============================================================================
+// Forward+ : Light and tile SSBOs
+// =============================================================================
+
+void Renderer::create_light_buffers()
+{
+	tileCountX_ = (swapchainExtent_.width + TILE_SIZE - 1) / TILE_SIZE;
+	tileCountY_ = (swapchainExtent_.height + TILE_SIZE - 1) / TILE_SIZE;
+	uint32_t numTiles = tileCountX_ * tileCountY_;
+
+	VkDeviceSize lightBufSize =
+		static_cast<VkDeviceSize>(MAX_LIGHTS) * sizeof(GPULight);
+	VkDeviceSize tileBufSize = static_cast<VkDeviceSize>(numTiles) *
+							   (1 + MAX_LIGHTS_PER_TILE) * sizeof(uint32_t);
+
+	lightSSBOs_.resize(MAX_FRAMES_IN_FLIGHT);
+	lightSSBOMemory_.resize(MAX_FRAMES_IN_FLIGHT);
+	lightSSBOMapped_.resize(MAX_FRAMES_IN_FLIGHT);
+	tileLightSSBOs_.resize(MAX_FRAMES_IN_FLIGHT);
+	tileLightSSBOMemory_.resize(MAX_FRAMES_IN_FLIGHT);
+
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	{
+		// Light SSBO: host-visible mapped for CPU write
+		create_buffer(lightBufSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+					  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+						  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+					  lightSSBOs_[i], lightSSBOMemory_[i]);
+		vkMapMemory(device_, lightSSBOMemory_[i], 0, lightBufSize, 0,
+					&lightSSBOMapped_[i]);
+
+		// Tile light SSBO: device-local for compute write / fragment read
+		create_buffer(tileBufSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+					  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, tileLightSSBOs_[i],
+					  tileLightSSBOMemory_[i]);
+	}
+}
+
+void Renderer::cleanup_light_buffers()
+{
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	{
+		if (i < static_cast<int>(lightSSBOs_.size()))
+		{
+			if (lightSSBOMapped_[i])
+				vkUnmapMemory(device_, lightSSBOMemory_[i]);
+			vkDestroyBuffer(device_, lightSSBOs_[i], nullptr);
+			vkFreeMemory(device_, lightSSBOMemory_[i], nullptr);
+		}
+		if (i < static_cast<int>(tileLightSSBOs_.size()))
+		{
+			vkDestroyBuffer(device_, tileLightSSBOs_[i], nullptr);
+			vkFreeMemory(device_, tileLightSSBOMemory_[i], nullptr);
+		}
+	}
+	lightSSBOs_.clear();
+	lightSSBOMemory_.clear();
+	lightSSBOMapped_.clear();
+	tileLightSSBOs_.clear();
+	tileLightSSBOMemory_.clear();
+
+	if (lightDescriptorPool_)
+	{
+		vkDestroyDescriptorPool(device_, lightDescriptorPool_, nullptr);
+		lightDescriptorPool_ = VK_NULL_HANDLE;
+	}
+	lightDescriptorSets_.clear();
+}
+
+// =============================================================================
+// Forward+ : Light descriptor pool & sets
+// =============================================================================
+
+void Renderer::create_light_descriptor_pool()
+{
+	std::array<VkDescriptorPoolSize, 2> poolSizes{};
+	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	poolSizes[0].descriptorCount =
+		static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT) * 2;  // light + tile
+	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	poolSizes[1].descriptorCount =
+		static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);  // depth
+
+	VkDescriptorPoolCreateInfo ci{
+		VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+	ci.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+	ci.pPoolSizes = poolSizes.data();
+	ci.maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+	VK_CHECK(
+		vkCreateDescriptorPool(device_, &ci, nullptr, &lightDescriptorPool_));
+}
+
+void Renderer::create_light_descriptor_sets()
+{
+	std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT,
+											   lightDataSetLayout_);
+	VkDescriptorSetAllocateInfo ai{
+		VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+	ai.descriptorPool = lightDescriptorPool_;
+	ai.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+	ai.pSetLayouts = layouts.data();
+	lightDescriptorSets_.resize(MAX_FRAMES_IN_FLIGHT);
+	VK_CHECK(
+		vkAllocateDescriptorSets(device_, &ai, lightDescriptorSets_.data()));
+
+	uint32_t numTiles = tileCountX_ * tileCountY_;
+	VkDeviceSize lightBufSize =
+		static_cast<VkDeviceSize>(MAX_LIGHTS) * sizeof(GPULight);
+	VkDeviceSize tileBufSize = static_cast<VkDeviceSize>(numTiles) *
+							   (1 + MAX_LIGHTS_PER_TILE) * sizeof(uint32_t);
+
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	{
+		VkDescriptorBufferInfo lightBufInfo{lightSSBOs_[i], 0, lightBufSize};
+		VkDescriptorBufferInfo tileBufInfo{tileLightSSBOs_[i], 0, tileBufSize};
+		VkDescriptorImageInfo depthImgInfo{};
+		depthImgInfo.sampler = depthSampler_;
+		depthImgInfo.imageView = depthView_;
+		depthImgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+		std::array<VkWriteDescriptorSet, 3> writes{};
+		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[0].dstSet = lightDescriptorSets_[i];
+		writes[0].dstBinding = 0;
+		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		writes[0].descriptorCount = 1;
+		writes[0].pBufferInfo = &lightBufInfo;
+
+		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[1].dstSet = lightDescriptorSets_[i];
+		writes[1].dstBinding = 1;
+		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		writes[1].descriptorCount = 1;
+		writes[1].pBufferInfo = &tileBufInfo;
+
+		writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[2].dstSet = lightDescriptorSets_[i];
+		writes[2].dstBinding = 2;
+		writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		writes[2].descriptorCount = 1;
+		writes[2].pImageInfo = &depthImgInfo;
+
+		vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()),
+							   writes.data(), 0, nullptr);
+	}
+}
+
+// =============================================================================
+// Forward+ : Compute pipeline (light culling)
+// =============================================================================
+
+void Renderer::create_compute_pipeline()
+{
+	auto compCode = packFile_->read("shaders/light_cull.comp.spv");
+	VkShaderModule compMod = create_shader_module(compCode);
+
+	VkPipelineShaderStageCreateInfo stage{
+		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+	stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	stage.module = compMod;
+	stage.pName = "main";
+
+	// Layout: set 0 = frame UBO, set 1 = light data
+	VkDescriptorSetLayout setLayouts[] = {frameSetLayout_, lightDataSetLayout_};
+	VkPipelineLayoutCreateInfo layoutCI{
+		VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+	layoutCI.setLayoutCount = 2;
+	layoutCI.pSetLayouts = setLayouts;
+	VK_CHECK(vkCreatePipelineLayout(device_, &layoutCI, nullptr,
+									&computePipelineLayout_));
+
+	VkComputePipelineCreateInfo ci{
+		VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+	ci.stage = stage;
+	ci.layout = computePipelineLayout_;
+	VK_CHECK(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr,
+									  &lightCullPipeline_));
+
+	vkDestroyShaderModule(device_, compMod, nullptr);
+}
+
+// =============================================================================
+// Forward+ : Heatmap debug pipeline
+// =============================================================================
+
+void Renderer::create_heatmap_pipeline()
+{
+	auto vertCode = packFile_->read("shaders/debug_heatmap.vert.spv");
+	auto fragCode = packFile_->read("shaders/debug_heatmap.frag.spv");
+	VkShaderModule vertMod = create_shader_module(vertCode);
+	VkShaderModule fragMod = create_shader_module(fragCode);
+
+	VkPipelineShaderStageCreateInfo stages[2]{};
+	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+	stages[0].module = vertMod;
+	stages[0].pName = "main";
+	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	stages[1].module = fragMod;
+	stages[1].pName = "main";
+
+	VkPipelineVertexInputStateCreateInfo vertInput{
+		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+
+	VkPipelineInputAssemblyStateCreateInfo inputAsm{
+		VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+	inputAsm.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+	VkPipelineViewportStateCreateInfo vpState{
+		VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+	vpState.viewportCount = 1;
+	vpState.scissorCount = 1;
+
+	VkPipelineRasterizationStateCreateInfo raster{
+		VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+	raster.polygonMode = VK_POLYGON_MODE_FILL;
+	raster.lineWidth = 1.0f;
+	raster.cullMode = VK_CULL_MODE_NONE;
+
+	VkPipelineMultisampleStateCreateInfo ms{
+		VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+	VkPipelineDepthStencilStateCreateInfo ds{
+		VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+	ds.depthTestEnable = VK_FALSE;
+	ds.depthWriteEnable = VK_FALSE;
+
+	VkPipelineColorBlendAttachmentState blendAtt{};
+	blendAtt.blendEnable = VK_TRUE;
+	blendAtt.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+	blendAtt.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	blendAtt.colorBlendOp = VK_BLEND_OP_ADD;
+	blendAtt.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	blendAtt.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+	blendAtt.alphaBlendOp = VK_BLEND_OP_ADD;
+	blendAtt.colorWriteMask =
+		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+		VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+	VkPipelineColorBlendStateCreateInfo blend{
+		VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+	blend.attachmentCount = 1;
+	blend.pAttachments = &blendAtt;
+
+	VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT,
+								  VK_DYNAMIC_STATE_SCISSOR};
+	VkPipelineDynamicStateCreateInfo dyn{
+		VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+	dyn.dynamicStateCount = 2;
+	dyn.pDynamicStates = dynStates;
+
+	// Layout: set 0 = frame UBO, set 1 = light data
+	VkDescriptorSetLayout heatLayouts[] = {frameSetLayout_,
+										   lightDataSetLayout_};
+	VkPipelineLayoutCreateInfo layoutCI{
+		VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+	layoutCI.setLayoutCount = 2;
+	layoutCI.pSetLayouts = heatLayouts;
+	VK_CHECK(vkCreatePipelineLayout(device_, &layoutCI, nullptr,
+									&heatmapPipelineLayout_));
+
+	VkGraphicsPipelineCreateInfo ci{
+		VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+	ci.stageCount = 2;
+	ci.pStages = stages;
+	ci.pVertexInputState = &vertInput;
+	ci.pInputAssemblyState = &inputAsm;
+	ci.pViewportState = &vpState;
+	ci.pRasterizationState = &raster;
+	ci.pMultisampleState = &ms;
+	ci.pDepthStencilState = &ds;
+	ci.pColorBlendState = &blend;
+	ci.pDynamicState = &dyn;
+	ci.layout = heatmapPipelineLayout_;
+	ci.renderPass = renderPass_;
+	ci.subpass = 0;
+
+	VK_CHECK(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr,
+									   &heatmapPipeline_));
+
+	vkDestroyShaderModule(device_, fragMod, nullptr);
+	vkDestroyShaderModule(device_, vertMod, nullptr);
+}
+
+// =============================================================================
+// Debug line visualization
+// =============================================================================
+
+void Renderer::create_debug_line_pipeline()
+{
+	auto vertCode = packFile_->read("shaders/debug_lines.vert.spv");
+	auto fragCode = packFile_->read("shaders/debug_lines.frag.spv");
+	VkShaderModule vertMod = create_shader_module(vertCode);
+	VkShaderModule fragMod = create_shader_module(fragCode);
+
+	VkPipelineShaderStageCreateInfo stages[2]{};
+	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+	stages[0].module = vertMod;
+	stages[0].pName = "main";
+	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	stages[1].module = fragMod;
+	stages[1].pName = "main";
+
+	auto bindingDesc = LineVertex::binding_desc();
+	auto attribDescs = LineVertex::attrib_descs();
+	VkPipelineVertexInputStateCreateInfo vertInput{
+		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+	vertInput.vertexBindingDescriptionCount = 1;
+	vertInput.pVertexBindingDescriptions = &bindingDesc;
+	vertInput.vertexAttributeDescriptionCount =
+		static_cast<uint32_t>(attribDescs.size());
+	vertInput.pVertexAttributeDescriptions = attribDescs.data();
+
+	VkPipelineInputAssemblyStateCreateInfo inputAsm{
+		VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+	inputAsm.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+
+	VkPipelineViewportStateCreateInfo vpState{
+		VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+	vpState.viewportCount = 1;
+	vpState.scissorCount = 1;
+
+	VkPipelineRasterizationStateCreateInfo raster{
+		VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+	raster.polygonMode = VK_POLYGON_MODE_FILL;
+	raster.lineWidth = 1.0f;
+	raster.cullMode = VK_CULL_MODE_NONE;
+
+	VkPipelineMultisampleStateCreateInfo ms{
+		VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+	VkPipelineDepthStencilStateCreateInfo ds{
+		VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+	ds.depthTestEnable = VK_TRUE;
+	ds.depthWriteEnable = VK_FALSE;
+	ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+	VkPipelineColorBlendAttachmentState blendAtt{};
+	blendAtt.colorWriteMask =
+		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+		VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+	VkPipelineColorBlendStateCreateInfo blend{
+		VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+	blend.attachmentCount = 1;
+	blend.pAttachments = &blendAtt;
+
+	VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT,
+								  VK_DYNAMIC_STATE_SCISSOR};
+	VkPipelineDynamicStateCreateInfo dyn{
+		VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+	dyn.dynamicStateCount = 2;
+	dyn.pDynamicStates = dynStates;
+
+	// Layout: set 0 = frame UBO only
+	VkPipelineLayoutCreateInfo layoutCI{
+		VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+	layoutCI.setLayoutCount = 1;
+	layoutCI.pSetLayouts = &frameSetLayout_;
+	VK_CHECK(vkCreatePipelineLayout(device_, &layoutCI, nullptr,
+									&debugLinePipelineLayout_));
+
+	VkGraphicsPipelineCreateInfo ci{
+		VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+	ci.stageCount = 2;
+	ci.pStages = stages;
+	ci.pVertexInputState = &vertInput;
+	ci.pInputAssemblyState = &inputAsm;
+	ci.pViewportState = &vpState;
+	ci.pRasterizationState = &raster;
+	ci.pMultisampleState = &ms;
+	ci.pDepthStencilState = &ds;
+	ci.pColorBlendState = &blend;
+	ci.pDynamicState = &dyn;
+	ci.layout = debugLinePipelineLayout_;
+	ci.renderPass = renderPass_;
+	ci.subpass = 0;
+
+	VK_CHECK(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr,
+									   &debugLinePipeline_));
+
+	vkDestroyShaderModule(device_, fragMod, nullptr);
+	vkDestroyShaderModule(device_, vertMod, nullptr);
+}
+
+void Renderer::create_debug_line_buffers()
+{
+	// 64KB per frame — enough for ~1300 line segments (2 vertices each)
+	constexpr VkDeviceSize bufSize = 64 * 1024;
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	{
+		create_buffer(bufSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+					  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+						  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+					  debugLineVertexBuffers_[i], debugLineVertexMemory_[i]);
+		vkMapMemory(device_, debugLineVertexMemory_[i], 0, bufSize, 0,
+					&debugLineVertexMapped_[i]);
+	}
+}
+
+void Renderer::update_debug_lines(const LightEnvironment& lights)
+{
+	auto verts = generate_light_lines(lights);
+	constexpr VkDeviceSize bufSize = 64 * 1024;
+	uint32_t maxVerts = static_cast<uint32_t>(bufSize / sizeof(LineVertex));
+	debugLineVertexCount_ = static_cast<uint32_t>(
+		std::min(static_cast<uint32_t>(verts.size()), maxVerts));
+	if (debugLineVertexCount_ > 0)
+	{
+		std::memcpy(debugLineVertexMapped_[currentFrame_], verts.data(),
+					debugLineVertexCount_ * sizeof(LineVertex));
+	}
+}
+
+// =============================================================================
+// Cleanup helpers
+// =============================================================================
 
 void Renderer::destroy_texture(Texture& tex)
 {

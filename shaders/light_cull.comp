@@ -1,0 +1,204 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+const uint TILE_SIZE = 16;
+const uint MAX_LIGHTS_PER_TILE = 256;
+
+// Light types
+const uint LIGHT_DIRECTIONAL = 0;
+const uint LIGHT_POINT       = 1;
+const uint LIGHT_SPOT        = 2;
+
+// Per-frame UBO (set 0, binding 0)
+layout(set = 0, binding = 0) uniform FrameUBO {
+    mat4  view;
+    mat4  proj;
+    mat4  invProj;
+    vec3  cameraPos;
+    uint  lightCount;
+    vec3  ambientColor;
+    uint  tileCountX;
+    uint  tileCountY;
+    uint  screenWidth;
+    uint  screenHeight;
+} frame;
+
+// Light data (set 1)
+struct GPULight {
+    vec4 positionAndType;
+    vec4 directionAndRadius;
+    vec4 colorAndIntensity;
+    vec4 coneParams;
+};
+
+layout(std430, set = 1, binding = 0) readonly buffer LightBuffer {
+    GPULight lights[];
+};
+
+layout(std430, set = 1, binding = 1) writeonly buffer TileLightBuffer {
+    uint tileData[];
+};
+
+layout(set = 1, binding = 2) uniform sampler2D depthTexture;
+
+// Shared memory
+shared uint sharedMinDepthU;
+shared uint sharedMaxDepthU;
+shared uint sharedLightCount;
+shared uint sharedLightIndices[MAX_LIGHTS_PER_TILE];
+
+// Reconstruct view-space position from screen coords and depth
+vec3 screenToView(vec2 screenCoord, float depth)
+{
+    // screenCoord in [0, screenWidth/Height]
+    vec2 ndc;
+    ndc.x = (screenCoord.x / float(frame.screenWidth))  * 2.0 - 1.0;
+    ndc.y = (screenCoord.y / float(frame.screenHeight)) * 2.0 - 1.0;
+
+    vec4 clip = vec4(ndc, depth, 1.0);
+    vec4 viewPos = frame.invProj * clip;
+    return viewPos.xyz / viewPos.w;
+}
+
+// Build a frustum plane from three points (all in view space)
+// Returns vec4(normal.xyz, d) where normal points inward
+vec4 computePlane(vec3 a, vec3 b, vec3 c)
+{
+    vec3 n = normalize(cross(b - a, c - a));
+    return vec4(n, -dot(n, a));
+}
+
+void main()
+{
+    uvec2 tileID = gl_WorkGroupID.xy;
+    uint localIdx = gl_LocalInvocationIndex;
+
+    // Initialize shared memory
+    if (localIdx == 0)
+    {
+        sharedMinDepthU = 0xFFFFFFFF;
+        sharedMaxDepthU = 0;
+        sharedLightCount = 0;
+    }
+    barrier();
+
+    // Sample depth for this thread's pixel
+    ivec2 pixelCoord = ivec2(tileID * uvec2(TILE_SIZE) + gl_LocalInvocationID.xy);
+    float depth = 1.0;  // far
+    if (pixelCoord.x < int(frame.screenWidth) &&
+        pixelCoord.y < int(frame.screenHeight))
+    {
+        vec2 uv = (vec2(pixelCoord) + 0.5) / vec2(frame.screenWidth, frame.screenHeight);
+        depth = texture(depthTexture, uv).r;
+    }
+
+    // Convert to uint for atomic min/max
+    uint depthU = floatBitsToUint(depth);
+    atomicMin(sharedMinDepthU, depthU);
+    atomicMax(sharedMaxDepthU, depthU);
+    barrier();
+
+    float minDepth = uintBitsToFloat(sharedMinDepthU);
+    float maxDepth = uintBitsToFloat(sharedMaxDepthU);
+
+    // Build tile frustum planes in view space (4 side planes)
+    // Tile corners in screen space
+    vec2 tileMin = vec2(tileID) * float(TILE_SIZE);
+    vec2 tileMax = min(tileMin + float(TILE_SIZE),
+                       vec2(frame.screenWidth, frame.screenHeight));
+
+    // View-space corners at near plane (depth=0 in Vulkan reversed-Z would be near,
+    // but we use standard depth 0-to-1 where 0=near, 1=far)
+    vec3 eye = vec3(0.0);  // camera is at origin in view space
+
+    vec3 tl = screenToView(tileMin, minDepth);
+    vec3 tr = screenToView(vec2(tileMax.x, tileMin.y), minDepth);
+    vec3 bl = screenToView(vec2(tileMin.x, tileMax.y), minDepth);
+    vec3 br = screenToView(tileMax, minDepth);
+
+    // 4 frustum side planes (normals point inward)
+    vec4 frustumPlanes[4];
+    frustumPlanes[0] = computePlane(eye, bl, tl);  // left
+    frustumPlanes[1] = computePlane(eye, tr, br);  // right
+    frustumPlanes[2] = computePlane(eye, tl, tr);  // top
+    frustumPlanes[3] = computePlane(eye, br, bl);  // bottom
+
+    // Near/far planes from min/max depth
+    vec3 nearPoint = screenToView(tileMin, minDepth);
+    vec3 farPoint  = screenToView(tileMin, maxDepth);
+    float nearZ = nearPoint.z;
+    float farZ  = farPoint.z;
+
+    // Cooperatively cull lights
+    uint threadCount = TILE_SIZE * TILE_SIZE;
+    for (uint i = localIdx; i < frame.lightCount; i += threadCount)
+    {
+        GPULight light = lights[i];
+        uint lightType = uint(light.positionAndType.w);
+
+        bool inFrustum = false;
+
+        if (lightType == LIGHT_DIRECTIONAL)
+        {
+            // Directionals always pass
+            inFrustum = true;
+        }
+        else
+        {
+            // Point/Spot: sphere-frustum test
+            vec3 worldPos = light.positionAndType.xyz;
+            vec4 viewPos4 = frame.view * vec4(worldPos, 1.0);
+            vec3 viewPos = viewPos4.xyz;
+            float radius = light.directionAndRadius.w;
+
+            // Check against near/far depth planes
+            // In Vulkan with standard depth, view space Z is negative (looking down -Z)
+            // nearZ and farZ are the view-space Z values of the tile depth bounds
+            float lightMinZ = viewPos.z - radius;
+            float lightMaxZ = viewPos.z + radius;
+
+            // Both nearZ and farZ are negative (view space), farZ < nearZ
+            if (lightMaxZ < min(nearZ, farZ) - radius ||
+                lightMinZ > max(nearZ, farZ) + radius)
+            {
+                inFrustum = false;
+            }
+            else
+            {
+                // Check against 4 side planes
+                inFrustum = true;
+                for (uint p = 0; p < 4; ++p)
+                {
+                    float d = dot(frustumPlanes[p].xyz, viewPos) +
+                              frustumPlanes[p].w;
+                    if (d < -radius)
+                    {
+                        inFrustum = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (inFrustum)
+        {
+            uint idx = atomicAdd(sharedLightCount, 1);
+            if (idx < MAX_LIGHTS_PER_TILE)
+                sharedLightIndices[idx] = i;
+        }
+    }
+    barrier();
+
+    // Write results to global tile buffer
+    uint tileIndex = tileID.y * frame.tileCountX + tileID.x;
+    uint tileOffset = tileIndex * (1 + MAX_LIGHTS_PER_TILE);
+
+    uint count = min(sharedLightCount, MAX_LIGHTS_PER_TILE);
+    if (localIdx == 0)
+        tileData[tileOffset] = count;
+
+    // Write light indices
+    for (uint i = localIdx; i < count; i += threadCount)
+        tileData[tileOffset + 1 + i] = sharedLightIndices[i];
+}
