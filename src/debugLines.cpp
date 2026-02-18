@@ -19,14 +19,10 @@ static void add_circle(std::vector<LineVertex>& out, const glm::vec3& center,
 {
 	for (int i = 0; i < segments; ++i)
 	{
-		float a0 =
-			2.0f * PI * static_cast<float>(i) / static_cast<float>(segments);
-		float a1 = 2.0f * PI * static_cast<float>(i + 1) /
-				   static_cast<float>(segments);
-		glm::vec3 p0 =
-			center + radius * (std::cos(a0) * axisU + std::sin(a0) * axisV);
-		glm::vec3 p1 =
-			center + radius * (std::cos(a1) * axisU + std::sin(a1) * axisV);
+		float a0 = 2.0f * PI * static_cast<float>(i) / static_cast<float>(segments);
+		float a1 = 2.0f * PI * static_cast<float>(i + 1) / static_cast<float>(segments);
+		glm::vec3 p0 = center + radius * (std::cos(a0) * axisU + std::sin(a0) * axisV);
+		glm::vec3 p1 = center + radius * (std::cos(a1) * axisU + std::sin(a1) * axisV);
 		add_line(out, p0, p1, color);
 	}
 }
@@ -36,8 +32,7 @@ static void build_basis(const glm::vec3& dir, glm::vec3& outU, glm::vec3& outV)
 {
 	glm::vec3 d = glm::normalize(dir);
 	// Pick a non-parallel vector for cross product
-	glm::vec3 up =
-		(std::abs(d.y) < 0.99f) ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
+	glm::vec3 up = (std::abs(d.y) < 0.99f) ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
 	outU = glm::normalize(glm::cross(d, up));
 	outV = glm::normalize(glm::cross(d, outU));
 }
@@ -47,8 +42,7 @@ static void generate_directional(std::vector<LineVertex>& out,
 {
 	glm::vec3 color = light.color;
 	glm::vec3 dir = glm::normalize(light.direction);
-	glm::vec3 origin(0.0f, 5.0f,
-					 0.0f);	 // Place above world origin for visibility
+	glm::vec3 origin(0.0f, 5.0f, 0.0f);  // Place above world origin for visibility
 	float shaftLen = 2.0f;
 	float headLen = 0.4f;
 	float headRadius = 0.15f;
@@ -65,8 +59,7 @@ static void generate_directional(std::vector<LineVertex>& out,
 	for (int i = 0; i < 4; ++i)
 	{
 		float angle = 2.0f * PI * static_cast<float>(i) / 4.0f;
-		glm::vec3 ribEnd =
-			headBase + headRadius * (std::cos(angle) * u + std::sin(angle) * v);
+		glm::vec3 ribEnd = headBase + headRadius * (std::cos(angle) * u + std::sin(angle) * v);
 		add_line(out, tip, ribEnd, color);
 	}
 
@@ -93,7 +86,8 @@ static void generate_point(std::vector<LineVertex>& out,
 	add_line(out, pos - glm::vec3(0, 0, s), pos + glm::vec3(0, 0, s), color);
 }
 
-static void generate_spot(std::vector<LineVertex>& out, const SpotLight& light)
+static void generate_spot(std::vector<LineVertex>& out,
+						  const SpotLight& light)
 {
 	glm::vec3 color = light.color;
 	glm::vec3 pos = light.position;
@@ -116,8 +110,7 @@ static void generate_spot(std::vector<LineVertex>& out, const SpotLight& light)
 	for (int i = 0; i < 8; ++i)
 	{
 		float angle = 2.0f * PI * static_cast<float>(i) / 8.0f;
-		glm::vec3 rimPoint =
-			baseCenter + outerR * (std::cos(angle) * u + std::sin(angle) * v);
+		glm::vec3 rimPoint = baseCenter + outerR * (std::cos(angle) * u + std::sin(angle) * v);
 		add_line(out, pos, rimPoint, color);
 	}
 
@@ -131,11 +124,14 @@ std::vector<LineVertex> generate_light_lines(const LightEnvironment& lights)
 	// Reserve a reasonable amount
 	verts.reserve(512);
 
-	for (const auto& d : lights.directionals) generate_directional(verts, d);
+	for (const auto& d : lights.directionals)
+		generate_directional(verts, d);
 
-	for (const auto& p : lights.points) generate_point(verts, p);
+	for (const auto& p : lights.points)
+		generate_point(verts, p);
 
-	for (const auto& s : lights.spots) generate_spot(verts, s);
+	for (const auto& s : lights.spots)
+		generate_spot(verts, s);
 
 	return verts;
 }

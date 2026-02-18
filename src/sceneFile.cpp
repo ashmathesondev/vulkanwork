@@ -1,6 +1,7 @@
 #include "sceneFile.h"
 
 #include <fstream>
+
 #include <glm/gtc/type_ptr.hpp>
 #include <nlohmann/json.hpp>
 
@@ -110,8 +111,8 @@ bool save_scene_file(const std::string& path, const SceneFileData& data)
 		n["meshIndex"] = node.meshIndex.has_value()
 							 ? json(node.meshIndex.value())
 							 : json(nullptr);
-		n["parent"] =
-			node.parent.has_value() ? json(node.parent.value()) : json(nullptr);
+		n["parent"] = node.parent.has_value() ? json(node.parent.value())
+											  : json(nullptr);
 
 		json children = json::array();
 		for (uint32_t c : node.children) children.push_back(c);

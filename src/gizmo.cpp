@@ -1,8 +1,7 @@
 #include "gizmo.h"
 
-#include <ImGuizmo.h>
 #include <imgui.h>
-
+#include <ImGuizmo.h>
 #include <glm/gtc/type_ptr.hpp>
 
 void Gizmo::begin_frame()
@@ -51,9 +50,10 @@ bool Gizmo::manipulate(const glm::mat4& view, const glm::mat4& proj,
 		}
 	}
 
-	return ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op,
-								mode, glm::value_ptr(objectMatrix), nullptr,
-								useSnap ? snapValues : nullptr);
+	return ImGuizmo::Manipulate(
+		glm::value_ptr(view), glm::value_ptr(proj), op, mode,
+		glm::value_ptr(objectMatrix), nullptr,
+		useSnap ? snapValues : nullptr);
 }
 
 bool Gizmo::is_using() const { return ImGuizmo::IsUsing(); }

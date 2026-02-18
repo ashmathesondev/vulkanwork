@@ -1,9 +1,13 @@
 #include "app.h"
 
-#include <ImGuiFileDialog.h>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
+
+#include <ImGuiFileDialog.h>
+
+#include "config.h"
+#include "sceneFile.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,9 +17,6 @@
 #include <glm/glm.hpp>
 #include <stdexcept>
 #include <string>
-
-#include "config.h"
-#include "sceneFile.h"
 
 // =============================================================================
 // Macros
@@ -56,7 +57,8 @@ void App::init_window()
 
 	window = glfwCreateWindow(w, h, "vulkanwork", nullptr, nullptr);
 
-	if (hasConfig) glfwSetWindowPos(window, x, y);
+	if (hasConfig)
+		glfwSetWindowPos(window, x, y);
 
 	glfwSetWindowUserPointer(window, this);
 	glfwSetFramebufferSizeCallback(
@@ -106,8 +108,10 @@ void App::main_loop()
 		{
 			if (ImGui::BeginMenu("File"))
 			{
-				if (ImGui::MenuItem("New Scene")) new_scene();
-				if (ImGui::MenuItem("Load Scene...")) showLoadDialog_ = true;
+				if (ImGui::MenuItem("New Scene"))
+					new_scene();
+				if (ImGui::MenuItem("Load Scene..."))
+					showLoadDialog_ = true;
 				if (ImGui::MenuItem("Save Scene", "Ctrl+S"))
 				{
 					if (currentScenePath.empty())
@@ -115,9 +119,11 @@ void App::main_loop()
 					else
 						do_save_scene(currentScenePath);
 				}
-				if (ImGui::MenuItem("Save Scene As...")) showSaveDialog_ = true;
+				if (ImGui::MenuItem("Save Scene As..."))
+					showSaveDialog_ = true;
 				ImGui::Separator();
-				if (ImGui::MenuItem("Import Mesh...")) showImportDialog_ = true;
+				if (ImGui::MenuItem("Import Mesh..."))
+					showImportDialog_ = true;
 				ImGui::Separator();
 				if (ImGui::MenuItem("Exit"))
 					glfwSetWindowShouldClose(window, true);
@@ -140,24 +146,24 @@ void App::main_loop()
 		{
 			IGFD::FileDialogConfig config;
 			config.path = ".";
-			ImGuiFileDialog::Instance()->OpenDialog("LoadScene", "Load Scene",
-													".scene", config);
+			ImGuiFileDialog::Instance()->OpenDialog(
+				"LoadScene", "Load Scene", ".scene", config);
 			showLoadDialog_ = false;
 		}
 		if (showSaveDialog_)
 		{
 			IGFD::FileDialogConfig config;
 			config.path = ".";
-			ImGuiFileDialog::Instance()->OpenDialog("SaveScene", "Save Scene",
-													".scene", config);
+			ImGuiFileDialog::Instance()->OpenDialog(
+				"SaveScene", "Save Scene", ".scene", config);
 			showSaveDialog_ = false;
 		}
 		if (showImportDialog_)
 		{
 			IGFD::FileDialogConfig config;
 			config.path = ".";
-			ImGuiFileDialog::Instance()->OpenDialog("ImportMesh", "Import Mesh",
-													".gltf,.glb", config);
+			ImGuiFileDialog::Instance()->OpenDialog(
+				"ImportMesh", "Import Mesh", ".gltf,.glb", config);
 			showImportDialog_ = false;
 		}
 
@@ -165,19 +171,22 @@ void App::main_loop()
 		if (ImGuiFileDialog::Instance()->Display("LoadScene"))
 		{
 			if (ImGuiFileDialog::Instance()->IsOk())
-				do_load_scene(ImGuiFileDialog::Instance()->GetFilePathName());
+				do_load_scene(
+					ImGuiFileDialog::Instance()->GetFilePathName());
 			ImGuiFileDialog::Instance()->Close();
 		}
 		if (ImGuiFileDialog::Instance()->Display("SaveScene"))
 		{
 			if (ImGuiFileDialog::Instance()->IsOk())
-				do_save_scene(ImGuiFileDialog::Instance()->GetFilePathName());
+				do_save_scene(
+					ImGuiFileDialog::Instance()->GetFilePathName());
 			ImGuiFileDialog::Instance()->Close();
 		}
 		if (ImGuiFileDialog::Instance()->Display("ImportMesh"))
 		{
 			if (ImGuiFileDialog::Instance()->IsOk())
-				do_import_mesh(ImGuiFileDialog::Instance()->GetFilePathName());
+				do_import_mesh(
+					ImGuiFileDialog::Instance()->GetFilePathName());
 			ImGuiFileDialog::Instance()->Close();
 		}
 
@@ -319,8 +328,9 @@ void App::process_input()
 			VkExtent2D ext = renderer.swapchain_extent();
 			selection.pick(static_cast<float>(mx), static_cast<float>(my),
 						   static_cast<float>(ext.width),
-						   static_cast<float>(ext.height), renderer.last_view(),
-						   renderer.last_proj(), sceneGraph, renderer.meshes());
+						   static_cast<float>(ext.height),
+						   renderer.last_view(), renderer.last_proj(),
+						   sceneGraph, renderer.meshes());
 		}
 	}
 	if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE)
@@ -407,7 +417,8 @@ void App::do_save_scene(const std::string& path)
 	data.sceneGraph = sceneGraph;
 	data.camera = camera;
 	data.lights = lights;
-	if (save_scene_file(path, data)) currentScenePath = path;
+	if (save_scene_file(path, data))
+		currentScenePath = path;
 }
 
 void App::do_load_scene(const std::string& path)
@@ -492,8 +503,7 @@ void App::do_delete_selected()
 
 	// Fix up scene graph meshIndex values for shifted mesh indices
 	// After each delete_mesh, meshes shift down. We need to recompute.
-	// Since we deleted in descending order, we can compute the cumulative
-	// shift.
+	// Since we deleted in descending order, we can compute the cumulative shift.
 	for (auto& node : sceneGraph.nodes)
 	{
 		if (!node.meshIndex.has_value()) continue;

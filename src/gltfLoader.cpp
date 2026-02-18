@@ -216,7 +216,8 @@ static void extract_node(const tinygltf::Model& model, int nodeIdx,
 			if (mesh.primitives.size() > 1)
 			{
 				size_t primIdx = &prim - mesh.primitives.data();
-				cpuMesh.name += " [prim " + std::to_string(primIdx) + "]";
+				cpuMesh.name +=
+					" [prim " + std::to_string(primIdx) + "]";
 			}
 
 			// --- Indices ---

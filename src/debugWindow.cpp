@@ -1,7 +1,7 @@
 #include "debugWindow.h"
 
-#include <ImGuizmo.h>
 #include <imgui.h>
+#include <ImGuizmo.h>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -17,8 +17,9 @@ static void draw_node_tree(SceneGraph& sceneGraph, uint32_t nodeIdx,
 						   Selection& selection)
 {
 	auto& node = sceneGraph.nodes[nodeIdx];
-	bool isSelected = selection.selectedNode.has_value() &&
-					  selection.selectedNode.value() == nodeIdx;
+	bool isSelected =
+		selection.selectedNode.has_value() &&
+		selection.selectedNode.value() == nodeIdx;
 	bool hasChildren = !node.children.empty();
 
 	ImGuiTreeNodeFlags flags =

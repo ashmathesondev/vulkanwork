@@ -57,7 +57,8 @@ void SceneGraph::remove_node(uint32_t nodeIdx)
 	}
 
 	// Erase nodes from back to front
-	for (uint32_t idx : toRemove) nodes.erase(nodes.begin() + idx);
+	for (uint32_t idx : toRemove)
+		nodes.erase(nodes.begin() + idx);
 
 	// Build a remap table: old index -> new index
 	// Since we removed sorted-descending, we can compute shifts
@@ -74,7 +75,8 @@ void SceneGraph::remove_node(uint32_t nodeIdx)
 	{
 		if (node.parent.has_value())
 			node.parent = compute_new_index(node.parent.value());
-		for (auto& child : node.children) child = compute_new_index(child);
+		for (auto& child : node.children)
+			child = compute_new_index(child);
 	}
 	for (auto& root : roots) root = compute_new_index(root);
 }
@@ -87,7 +89,8 @@ void SceneGraph::clear()
 
 void SceneGraph::update_world_transforms()
 {
-	for (uint32_t root : roots) update_node(root, glm::mat4{1.0f});
+	for (uint32_t root : roots)
+		update_node(root, glm::mat4{1.0f});
 }
 
 void SceneGraph::update_node(uint32_t nodeIdx, const glm::mat4& parentWorld)
