@@ -1,5 +1,7 @@
 #include "gltfLoader.h"
 
+#include "logger.h"
+
 #define TINYGLTF_NO_STB_IMAGE
 #define TINYGLTF_NO_STB_IMAGE_WRITE
 #define TINYGLTF_NO_INCLUDE_STB_IMAGE
@@ -190,7 +192,8 @@ static void compute_tangents(std::vector<Vertex>& verts,
 // =============================================================================
 
 static void extract_node(const tinygltf::Model& model, int nodeIdx,
-						 const glm::mat4& parentTransform, Scene& scene)
+						 const glm::mat4& parentTransform, Scene& scene,
+						 const std::string& path)
 {
 	const auto& node = model.nodes[nodeIdx];
 	glm::mat4 transform = parentTransform * node_transform(node);
@@ -204,6 +207,9 @@ static void extract_node(const tinygltf::Model& model, int nodeIdx,
 				continue;
 
 			Mesh cpuMesh;
+			cpuMesh.sourcePath = path;
+			cpuMesh.sourceMeshIndex =
+				static_cast<uint32_t>(scene.meshes.size());
 			cpuMesh.transform = transform;
 			cpuMesh.materialIndex =
 				(prim.material >= 0) ? static_cast<uint32_t>(prim.material) : 0;
@@ -216,8 +222,7 @@ static void extract_node(const tinygltf::Model& model, int nodeIdx,
 			if (mesh.primitives.size() > 1)
 			{
 				size_t primIdx = &prim - mesh.primitives.data();
-				cpuMesh.name +=
-					" [prim " + std::to_string(primIdx) + "]";
+				cpuMesh.name += " [prim " + std::to_string(primIdx) + "]";
 			}
 
 			// --- Indices ---
@@ -338,7 +343,7 @@ static void extract_node(const tinygltf::Model& model, int nodeIdx,
 	}
 
 	for (int child : node.children)
-		extract_node(model, child, transform, scene);
+		extract_node(model, child, transform, scene, path);
 }
 
 // =============================================================================
@@ -468,8 +473,8 @@ Scene load_gltf(const std::string& path)
 	else
 		ok = loader.LoadASCIIFromFile(&model, &err, &warn, path);
 
-	if (!warn.empty()) std::fprintf(stderr, "glTF warning: %s\n", warn.c_str());
-	if (!err.empty()) std::fprintf(stderr, "glTF error: %s\n", err.c_str());
+	if (!warn.empty()) LOG_WARN("glTF [%s]: %s", path.c_str(), warn.c_str());
+	if (!err.empty()) LOG_ERROR("glTF [%s]: %s", path.c_str(), err.c_str());
 	if (!ok) throw std::runtime_error("Failed to load glTF: " + path);
 
 	Scene scene;
@@ -481,11 +486,11 @@ Scene load_gltf(const std::string& path)
 	const auto& gltfScene =
 		model.scenes[model.defaultScene >= 0 ? model.defaultScene : 0];
 	for (int nodeIdx : gltfScene.nodes)
-		extract_node(model, nodeIdx, glm::mat4{1.0f}, scene);
+		extract_node(model, nodeIdx, glm::mat4{1.0f}, scene, path);
 
-	std::fprintf(
-		stderr, "Loaded glTF: %zu meshes, %zu materials, %zu textures\n",
-		scene.meshes.size(), scene.materials.size(), scene.textures.size());
+	LOG_INFO("Loaded glTF '%s': %zu mesh(es), %zu material(s), %zu texture(s)",
+			 path.c_str(), scene.meshes.size(), scene.materials.size(),
+			 scene.textures.size());
 
 	return scene;
 }

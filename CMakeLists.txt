@@ -61,24 +61,13 @@ set(MODEL_PATH "${CMAKE_SOURCE_DIR}/models")
 configure_file(src/config.h.in ${CMAKE_BINARY_DIR}/generated/config.h @ONLY)
 
 # --- Executable --------------------------------------------------------------
-add_executable(vulkanwork
-    src/main.cpp
-    src/app.cpp
-    src/debugWindow.cpp
-    src/debugLines.cpp
-    src/gltfLoader.cpp
-    src/selection.cpp
-    src/gizmo.cpp
-    src/sceneGraph.cpp
-    src/graphics/camera.cpp
-    src/graphics/cube.cpp
-    src/graphics/light.cpp
-    src/graphics/material.cpp
-    src/graphics/renderer.cpp
-    src/graphics/texture.cpp
-    src/sceneFile.cpp
-    src/vendor/ImGuiFileDialog/ImGuiFileDialog.cpp
-)
+file(GLOB_RECURSE SRC_FILES "src/*.cpp")
+file(GLOB_RECURSE HEADER_FILES "src/*.h" "src/*.hpp")
+
+source_group(TREE ${CMAKE_SOURCE_DIR}/src PREFIX "Source Files" FILES ${SRC_FILES})
+source_group(TREE ${CMAKE_SOURCE_DIR}/src PREFIX "Header Files" FILES ${HEADER_FILES})
+
+add_executable(vulkanwork ${SRC_FILES} ${HEADER_FILES})
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT vulkanwork)
 

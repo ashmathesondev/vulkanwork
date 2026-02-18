@@ -6,20 +6,19 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-#include "gizmo.h"
+#include "editor/gizmo.h"
+#include "editor/sceneGraph.h"
+#include "editor/selection.h"
 #include "graphics/light.h"
 #include "graphics/renderer.h"
-#include "sceneGraph.h"
-#include "selection.h"
 
 // Recursive helper to draw scene hierarchy tree
 static void draw_node_tree(SceneGraph& sceneGraph, uint32_t nodeIdx,
 						   Selection& selection)
 {
 	auto& node = sceneGraph.nodes[nodeIdx];
-	bool isSelected =
-		selection.selectedNode.has_value() &&
-		selection.selectedNode.value() == nodeIdx;
+	bool isSelected = selection.selectedNode.has_value() &&
+					  selection.selectedNode.value() == nodeIdx;
 	bool hasChildren = !node.children.empty();
 
 	ImGuiTreeNodeFlags flags =

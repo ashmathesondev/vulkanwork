@@ -1,9 +1,10 @@
 #include "sceneFile.h"
 
 #include <fstream>
-
 #include <glm/gtc/type_ptr.hpp>
 #include <nlohmann/json.hpp>
+
+#include "logger.h"
 
 using json = nlohmann::json;
 
@@ -43,6 +44,8 @@ static glm::mat4 json_to_mat4(const json& j)
 
 bool save_scene_file(const std::string& path, const SceneFileData& data)
 {
+	LOG_INFO("save_scene_file: writing %zu nodes to '%s'",
+			 data.sceneGraph.nodes.size(), path.c_str());
 	json root;
 	root["version"] = 1;
 	root["modelPath"] = data.modelPath;
@@ -111,8 +114,10 @@ bool save_scene_file(const std::string& path, const SceneFileData& data)
 		n["meshIndex"] = node.meshIndex.has_value()
 							 ? json(node.meshIndex.value())
 							 : json(nullptr);
-		n["parent"] = node.parent.has_value() ? json(node.parent.value())
-											  : json(nullptr);
+		n["modelPath"] = node.modelPath;
+		n["meshIndexInModel"] = node.meshIndexInModel;
+		n["parent"] =
+			node.parent.has_value() ? json(node.parent.value()) : json(nullptr);
 
 		json children = json::array();
 		for (uint32_t c : node.children) children.push_back(c);
@@ -123,7 +128,12 @@ bool save_scene_file(const std::string& path, const SceneFileData& data)
 	root["nodes"] = nodesArr;
 
 	std::ofstream f(path);
-	if (!f) return false;
+	if (!f)
+	{
+		LOG_ERROR("save_scene_file: cannot open '%s' for writing",
+				  path.c_str());
+		return false;
+	}
 	f << root.dump(2);
 	return f.good();
 }
@@ -135,15 +145,21 @@ bool save_scene_file(const std::string& path, const SceneFileData& data)
 bool load_scene_file(const std::string& path, SceneFileData& data)
 {
 	std::ifstream f(path);
-	if (!f) return false;
+	if (!f)
+	{
+		LOG_ERROR("load_scene_file: cannot open '%s'", path.c_str());
+		return false;
+	}
 
 	json root;
 	try
 	{
 		root = json::parse(f);
 	}
-	catch (...)
+	catch (const std::exception& e)
 	{
+		LOG_ERROR("load_scene_file: JSON parse error in '%s': %s", path.c_str(),
+				  e.what());
 		return false;
 	}
 
@@ -247,6 +263,9 @@ bool load_scene_file(const std::string& path, SceneFileData& data)
 
 			if (n.contains("meshIndex") && !n["meshIndex"].is_null())
 				node.meshIndex = n["meshIndex"].get<uint32_t>();
+
+			node.modelPath = n.value("modelPath", std::string{});
+			node.meshIndexInModel = n.value("meshIndexInModel", 0u);
 
 			if (n.contains("parent") && !n["parent"].is_null())
 				node.parent = n["parent"].get<uint32_t>();

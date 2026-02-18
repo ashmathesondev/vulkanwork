@@ -5,6 +5,7 @@
 Mesh make_cube_mesh()
 {
 	Mesh mesh;
+	mesh.sourcePath = "internal://cube";
 	mesh.materialIndex = 0;
 	mesh.transform = glm::mat4{1.0f};
 

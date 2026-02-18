@@ -47,6 +47,10 @@ See [ASSETS.md](ASSETS.md) for details on the `.pak` asset packing system.
     ├── packfile.h / packfile.cpp   Asset pack reader (LZ4 decompression)
     └── config.h.in             CMake-generated paths
 ```
+## ToDo
+
+- Version the .scene file format
+- 
 
 ## Tools/Utilities
 

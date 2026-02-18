@@ -1,20 +1,20 @@
 {
   "camera": {
     "fov": 45.0,
-    "pitch": -5.600002765655518,
+    "pitch": -15.500020980834961,
     "position": [
-      1.4016413688659668,
-      1.7304829359054565,
-      9.086394309997559
+      4.727376937866211,
+      3.8085336685180664,
+      9.75538158416748
     ],
-    "yaw": -108.29952239990234
+    "yaw": -119.69952392578125
   },
   "lights": {
     "ambient": {
       "color": [
         1.0,
         1.0,
-        0.9019607901573181
+        1.0
       ],
       "intensity": 0.029999999329447746
     },
@@ -26,9 +26,9 @@
           1.0
         ],
         "direction": [
-          0.46799999475479126,
+          0.4319342076778412,
           -0.8638684153556824,
-          0.008999999612569809
+          0.2591605484485626
         ],
         "intensity": 3.0
       }
@@ -36,32 +36,8 @@
     "points": [],
     "spots": []
   },
-  "modelPath": "E:/work/personal/vulkanwork/models/DamagedHelmet.glb",
+  "modelPath": "",
   "nodes": [
-    {
-      "children": [],
-      "localTransform": [
-        1.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        -1.1920928955078125e-07,
-        1.0000001192092896,
-        0.0,
-        0.0,
-        -1.0000001192092896,
-        -1.1920928955078125e-07,
-        0.0,
-        4.0326008796691895,
-        0.0,
-        -0.32639431953430176,
-        1.0
-      ],
-      "meshIndex": 0,
-      "name": "node_damagedHelmet_-6514",
-      "parent": null
-    },
     {
       "children": [],
       "localTransform": [
@@ -82,7 +58,9 @@
         0.0,
         1.0
       ],
-      "meshIndex": 1,
+      "meshIndex": 0,
+      "meshIndexInModel": 0,
+      "modelPath": "internal://cube",
       "name": "Cube",
       "parent": null
     },
@@ -101,12 +79,14 @@
         0.0,
         3.5,
         0.0,
-        -0.4929671883583069,
-        -1.7188763618469238,
-        -1.809415578842163,
+        -1.6408922672271729,
+        -0.8415864109992981,
+        -2.068570137023926,
         1.0
       ],
-      "meshIndex": 2,
+      "meshIndex": 1,
+      "meshIndexInModel": 0,
+      "modelPath": "E:\\work\\personal\\vulkanwork\\models\\DragonAttenuation\\glb\\Dragon_Attenuation.gltf",
       "name": "Cloth Backdrop",
       "parent": null
     },
@@ -125,13 +105,41 @@
         -0.25,
         -8.940698137394065e-08,
         0.0,
-        0.0253753662109375,
-        -1.7689440250396729,
-        -1.094315528869629,
+        -1.1491453647613525,
+        -0.7306460738182068,
+        -1.4511560201644897,
+        1.0
+      ],
+      "meshIndex": 2,
+      "meshIndexInModel": 1,
+      "modelPath": "E:\\work\\personal\\vulkanwork\\models\\DragonAttenuation\\glb\\Dragon_Attenuation.gltf",
+      "name": "Dragon",
+      "parent": null
+    },
+    {
+      "children": [],
+      "localTransform": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -1.1920928955078125e-07,
+        1.0000001192092896,
+        0.0,
+        0.0,
+        -1.0000001192092896,
+        -1.1920928955078125e-07,
+        0.0,
+        1.7056769132614136,
+        0.0,
+        -1.4265120029449463,
         1.0
       ],
       "meshIndex": 3,
-      "name": "Dragon",
+      "meshIndexInModel": 0,
+      "modelPath": "E:\\work\\personal\\vulkanwork\\models\\DamagedHelmet.gltf",
+      "name": "node_damagedHelmet_-6514",
       "parent": null
     }
   ],
