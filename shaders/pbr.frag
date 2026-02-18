@@ -154,12 +154,15 @@ void main()
     uint tileOffset = tileIndex * (1 + 256);  // count + MAX_LIGHTS_PER_TILE indices
     uint tileLightCount = tileData[tileOffset];
 
+    // Fallback: if tile culling produced no results, iterate all lights directly
+    bool useTiles = (tileLightCount > 0);
+    uint loopCount = useTiles ? tileLightCount : frame.lightCount;
+
     vec3 Lo = vec3(0.0);
 
-    // Loop over this tile's light list
-    for (uint i = 0; i < tileLightCount; ++i)
+    for (uint i = 0; i < loopCount; ++i)
     {
-        uint lightIdx = tileData[tileOffset + 1 + i];
+        uint lightIdx = useTiles ? tileData[tileOffset + 1 + i] : i;
         GPULight light = lights[lightIdx];
 
         uint lightType = uint(light.positionAndType.w);

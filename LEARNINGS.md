@@ -2,6 +2,12 @@
 
 This document summarizes the key architectural decisions, implementation patterns, and lessons learned from building this Vulkan rendering application.
 
+## 0. References
+-   [Khronos Vulkan Tutorial](https://docs.vulkan.org/tutorial/latest/00_Introduction.html)
+-   [Vulkan Tutorial](https://vulkan-tutorial.com/)
+-   [Vulkan API Documentation](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkInstance.html)
+-   [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)
+
 ## 1. Project Structure & Build System
 
 -   **Layered Code Organization:** The project successfully separates concerns into distinct layers:
