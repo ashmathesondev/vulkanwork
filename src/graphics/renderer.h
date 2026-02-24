@@ -27,6 +27,14 @@ static constexpr uint32_t MAX_LIGHTS_PER_TILE = 256;
 static constexpr uint32_t MAX_LIGHTS = 1024;
 
 // =============================================================================
+// Shadow mapping constants
+// =============================================================================
+
+static constexpr uint32_t SHADOW_DIR_SIZE = 2048;
+static constexpr uint32_t SHADOW_SPOT_SIZE = 1024;
+static constexpr uint32_t MAX_SPOT_SHADOWS = 4;
+
+// =============================================================================
 // Renderer
 // =============================================================================
 
@@ -44,7 +52,7 @@ struct Renderer
 		VkCommandBuffer cmd;
 		uint32_t imageIndex;
 	};
-	std::optional<FrameContext> begin_frame();
+	std::optional<FrameContext> begin_frame(const LightEnvironment& lights);
 	void update_uniforms(const Camera& camera, float time,
 						 const LightEnvironment& lights);
 	void update_debug_lines(const LightEnvironment& lights);
@@ -75,6 +83,10 @@ struct Renderer
 	bool debugSkipDepthPrepass_ = false;
 	bool debugDisableCulling_ = false;
 	int debugFrontFace_ = 0;  // 0=CCW, 1=CW
+
+	// Shadow toggles (controlled from ImGui)
+	bool shadowsEnabled_ = true;
+	float shadowBias_ = 0.005f;
 
 	// Scene accessors (for selection / gizmo)
 	const std::vector<Mesh>& meshes() const { return meshes_; }
@@ -128,6 +140,42 @@ struct Renderer
 	VkFramebuffer depthOnlyFramebuffer_ = VK_NULL_HANDLE;
 	VkPipelineLayout depthPrepassPipelineLayout_ = VK_NULL_HANDLE;
 	VkPipeline depthPrepassPipeline_ = VK_NULL_HANDLE;
+
+	// Shadow mapping
+	VkRenderPass shadowRenderPass_ = VK_NULL_HANDLE;
+	VkPipelineLayout shadowPipelineLayout_ = VK_NULL_HANDLE;
+	VkPipeline shadowPipeline_ = VK_NULL_HANDLE;
+	VkSampler shadowSampler_ = VK_NULL_HANDLE;
+
+	VkImage dirShadowImage_[MAX_FRAMES_IN_FLIGHT] = {};
+	VkDeviceMemory dirShadowMemory_[MAX_FRAMES_IN_FLIGHT] = {};
+	VkImageView dirShadowView_[MAX_FRAMES_IN_FLIGHT] = {};
+	VkFramebuffer dirShadowFramebuffer_[MAX_FRAMES_IN_FLIGHT] = {};
+
+	VkImage spotShadowImages_[MAX_FRAMES_IN_FLIGHT][MAX_SPOT_SHADOWS] = {};
+	VkDeviceMemory spotShadowMemory_[MAX_FRAMES_IN_FLIGHT][MAX_SPOT_SHADOWS] =
+		{};
+	VkImageView spotShadowViews_[MAX_FRAMES_IN_FLIGHT][MAX_SPOT_SHADOWS] = {};
+	VkFramebuffer spotShadowFramebuffers_[MAX_FRAMES_IN_FLIGHT]
+										 [MAX_SPOT_SHADOWS] = {};
+
+	VkDescriptorSetLayout shadowSetLayout_ = VK_NULL_HANDLE;
+	VkDescriptorPool shadowDescriptorPool_ = VK_NULL_HANDLE;
+	std::vector<VkDescriptorSet> shadowDescriptorSets_;
+
+	struct ShadowUBO
+	{
+		alignas(16) glm::mat4 dirLightVP;
+		alignas(16) glm::mat4 spotLightVP[MAX_SPOT_SHADOWS];
+		alignas(4) int32_t dirShadowEnabled;
+		alignas(4) int32_t spotShadowCount;
+		alignas(4) float shadowBias;
+		alignas(4) int32_t _pad;
+		alignas(16) glm::ivec4 spotLightIdx;
+	};
+	std::vector<VkBuffer> shadowUBOBuffers_;
+	std::vector<VkDeviceMemory> shadowUBOMemory_;
+	std::vector<void*> shadowUBOMapped_;
 
 	// PBR pipeline
 	VkDescriptorSetLayout frameSetLayout_ = VK_NULL_HANDLE;
@@ -260,6 +308,21 @@ struct Renderer
 
 	// Forward+ per-frame
 	void draw_depth_prepass(VkCommandBuffer cmd);
+
+	// Shadow mapping setup
+	void create_shadow_render_pass();
+	void create_shadow_resources();
+	void create_shadow_sampler();
+	void create_shadow_pipeline();
+	void create_shadow_descriptor_layout();
+	void create_shadow_descriptor_pool();
+	void create_shadow_descriptor_sets();
+	void create_shadow_ubo_buffers();
+
+	// Shadow mapping per-frame
+	void draw_shadow_pass(VkCommandBuffer cmd, const LightEnvironment& lights);
+	glm::mat4 compute_dir_light_vp(const DirectionalLight& l) const;
+	glm::mat4 compute_spot_light_vp(const SpotLight& l) const;
 
 	// Scene helpers
 	void add_cube_to_scene(Scene& scene);

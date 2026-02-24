@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 project(vulkanwork LANGUAGES CXX)
 
+# vcpkg's applocal DLL-copy step defaults to pwsh.exe (PowerShell 7 Preview).
+# Redirect it to powershell.exe (Windows PowerShell 5.x, always present) so
+# the post-build step works without PS7 installed.
+set(VCPKG_APPLOCAL_DEPS ON CACHE BOOL "" FORCE)
+set(Z_VCPKG_POWERSHELL_PATH "powershell.exe" CACHE INTERNAL "" FORCE)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -31,6 +37,7 @@ set(SHADERS
     ${SHADER_SRC_DIR}/cube.frag
     ${SHADER_SRC_DIR}/pbr.vert
     ${SHADER_SRC_DIR}/pbr.frag
+    ${SHADER_SRC_DIR}/shadow.vert
     ${SHADER_SRC_DIR}/light_cull.comp
     ${SHADER_SRC_DIR}/debug_heatmap.vert
     ${SHADER_SRC_DIR}/debug_heatmap.frag
@@ -108,6 +115,7 @@ add_custom_command(
         shaders/cube.frag.spv=${SHADER_BIN_DIR}/cube.frag.spv
         shaders/pbr.vert.spv=${SHADER_BIN_DIR}/pbr.vert.spv
         shaders/pbr.frag.spv=${SHADER_BIN_DIR}/pbr.frag.spv
+        shaders/shadow.vert.spv=${SHADER_BIN_DIR}/shadow.vert.spv
         shaders/light_cull.comp.spv=${SHADER_BIN_DIR}/light_cull.comp.spv
         shaders/debug_heatmap.vert.spv=${SHADER_BIN_DIR}/debug_heatmap.vert.spv
         shaders/debug_heatmap.frag.spv=${SHADER_BIN_DIR}/debug_heatmap.frag.spv

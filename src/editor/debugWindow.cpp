@@ -1,7 +1,7 @@
 #include "debugWindow.h"
 
-#include <imgui.h>
 #include <ImGuizmo.h>
+#include <imgui.h>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -65,6 +65,10 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 	ImGui::Separator();
 	ImGui::Checkbox("Show Tile Heatmap", &renderer.showHeatmap_);
 	ImGui::Checkbox("Show Light Wireframes", &renderer.showDebugLines_);
+	ImGui::Separator();
+	ImGui::Checkbox("Enable Shadows", &renderer.shadowsEnabled_);
+	ImGui::SliderFloat("Shadow Bias", &renderer.shadowBias_, 0.0f, 0.05f,
+					   "%.4f");
 	ImGui::Separator();
 	ImGui::Text("WASD + Space/Ctrl: move");
 	ImGui::Text("Right-click + drag: look");

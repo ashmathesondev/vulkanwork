@@ -235,7 +235,7 @@ void App::main_loop()
 		ImGui::Render();
 
 		// --- Draw ------------------------------------------------------------
-		auto frame = renderer.begin_frame();
+		auto frame = renderer.begin_frame(lights);
 		if (!frame) continue;  // swapchain was recreated
 
 		float time = static_cast<float>(glfwGetTime());

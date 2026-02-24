@@ -53,6 +53,20 @@ layout(std430, set = 2, binding = 1) readonly buffer TileLightBuffer {
     uint tileData[];
 };
 
+// Shadow data (set 3)
+layout(set = 3, binding = 0) uniform ShadowUBO {
+    mat4  dirLightVP;
+    mat4  spotLightVP[4];
+    int   dirShadowEnabled;
+    int   spotShadowCount;
+    float shadowBias;
+    int   _pad;
+    ivec4 spotLightIdx;
+} shadow;
+
+layout(set = 3, binding = 1) uniform sampler2DShadow dirShadowMap;
+layout(set = 3, binding = 2) uniform sampler2DShadow spotShadowMaps[4];
+
 // Inputs from vertex shader
 layout(location = 0) in vec3 fragWorldPos;
 layout(location = 1) in vec2 fragTexCoord;
@@ -126,6 +140,26 @@ vec3 evaluateBRDF(vec3 N, vec3 V, vec3 L, vec3 albedo, float metallic,
 }
 
 // =============================================================================
+// Shadow helpers
+// =============================================================================
+
+vec3 to_shadow_coords(vec4 clipPos) {
+    vec3 ndc = clipPos.xyz / clipPos.w;
+    return vec3(ndc.xy * 0.5 + 0.5, ndc.z);
+}
+
+float sample_shadow_pcf(sampler2DShadow smap, vec3 sc, float bias) {
+    if (sc.z < 0.0 || sc.z > 1.0) return 1.0;
+    if (any(lessThan(sc.xy, vec2(0.0))) || any(greaterThan(sc.xy, vec2(1.0)))) return 1.0;
+    vec2 texelSize = 1.0 / vec2(textureSize(smap, 0));
+    float s = 0.0;
+    for (int x = -1; x <= 1; x++)
+        for (int y = -1; y <= 1; y++)
+            s += texture(smap, vec3(sc.xy + vec2(x, y) * texelSize, sc.z - bias));
+    return s / 9.0;
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -172,8 +206,13 @@ void main()
         if (lightType == LIGHT_DIRECTIONAL)
         {
             vec3 L = normalize(-light.directionAndRadius.xyz);
+            float shadowFactor = 1.0;
+            if (shadow.dirShadowEnabled == 1) {
+                vec3 sc = to_shadow_coords(shadow.dirLightVP * vec4(fragWorldPos, 1.0));
+                shadowFactor = sample_shadow_pcf(dirShadowMap, sc, shadow.shadowBias);
+            }
             Lo += evaluateBRDF(N, V, L, albedo, metallic, roughness, F0,
-                               lightColor, lightIntensity);
+                               lightColor, lightIntensity) * shadowFactor;
         }
         else if (lightType == LIGHT_POINT)
         {
@@ -199,8 +238,17 @@ void main()
             float cosOuter = light.coneParams.y;
             float spotFactor = smoothstep(cosOuter, cosInner, cosAngle);
 
+            float spotShadowFactor = 1.0;
+            for (int s = 0; s < shadow.spotShadowCount; s++) {
+                if (shadow.spotLightIdx[s] == int(lightIdx)) {
+                    vec3 sc = to_shadow_coords(shadow.spotLightVP[s] * vec4(fragWorldPos, 1.0));
+                    spotShadowFactor = sample_shadow_pcf(spotShadowMaps[s], sc, shadow.shadowBias);
+                    break;
+                }
+            }
+
             Lo += evaluateBRDF(N, V, L, albedo, metallic, roughness, F0,
-                               lightColor, lightIntensity * atten * spotFactor);
+                               lightColor, lightIntensity * atten * spotFactor) * spotShadowFactor;
         }
     }
 
