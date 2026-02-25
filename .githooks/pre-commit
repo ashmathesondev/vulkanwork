@@ -1,0 +1,18 @@
+#!/bin/sh
+# Pre-commit hook: auto-format staged C/C++ files with clang-format, re-stage them,
+# then verify formatting succeeded before allowing the commit.
+
+for file in $(git diff --cached --name-only | grep -E '\.(c|cpp|h|hpp)$')
+do
+  clang-format -i "$file"
+  git add "$file"
+  echo "clang-format: $file"
+
+  REPLACEMENTS=$(clang-format --output-replacements-xml "$file" | grep "<replacement ")
+  if [ ! -z "$REPLACEMENTS" ]; then
+    echo "Error: '$file' still has formatting issues after clang-format. Please check the file manually."
+    exit 1
+  fi
+done
+
+exit 0

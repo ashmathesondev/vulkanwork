@@ -26,9 +26,13 @@ See [ASSETS.md](ASSETS.md) for details on the `.pak` asset packing system.
 ```
 ├── CMakeLists.txt              CMake build configuration
 ├── Makefile                    Convenience build driver
+├── setup.ps1                   One-time setup after cloning (Windows)
+├── setup.sh                    One-time setup after cloning (Linux/macOS)
 ├── startvs.ps1                 Launch project in Visual Studio
 ├── format-staged.ps1           Format staged C/C++ files and optionally commit
 ├── vcpkg.json                  vcpkg package manifest
+├── .githooks/
+│   └── pre-commit              clang-format pre-commit hook
 ├── build/
 │   ├── generic/                Default build output (includes assets.pak)
 │   ├── vs22/                   Visual Studio 2022 build output
@@ -50,7 +54,25 @@ See [ASSETS.md](ASSETS.md) for details on the `.pak` asset packing system.
 ```
 ## Contributing
 
-This project enforces clang-format via a pre-commit hook. Before committing, use the helper script to format all staged C/C++ files:
+### First-time setup
+
+After cloning, run the setup script once to activate the git hooks:
+
+**Windows:**
+```powershell
+.\setup.ps1
+```
+
+**Linux/macOS:**
+```sh
+./setup.sh
+```
+
+This configures git to use the `.githooks/` directory, which contains a pre-commit hook that automatically runs clang-format on staged C/C++ files before each commit.
+
+### Committing
+
+The pre-commit hook runs automatically on `git commit`. You can also use the helper script to format and commit in one step:
 
 ```powershell
 # Format and re-stage only:
