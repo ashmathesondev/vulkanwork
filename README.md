@@ -27,6 +27,7 @@ See [ASSETS.md](ASSETS.md) for details on the `.pak` asset packing system.
 ├── CMakeLists.txt              CMake build configuration
 ├── Makefile                    Convenience build driver
 ├── startvs.ps1                 Launch project in Visual Studio
+├── format-staged.ps1           Format staged C/C++ files and optionally commit
 ├── vcpkg.json                  vcpkg package manifest
 ├── build/
 │   ├── generic/                Default build output (includes assets.pak)
@@ -47,6 +48,18 @@ See [ASSETS.md](ASSETS.md) for details on the `.pak` asset packing system.
     ├── packfile.h / packfile.cpp   Asset pack reader (LZ4 decompression)
     └── config.h.in             CMake-generated paths
 ```
+## Contributing
+
+This project enforces clang-format via a pre-commit hook. Before committing, use the helper script to format all staged C/C++ files:
+
+```powershell
+# Format and re-stage only:
+.\format-staged.ps1
+
+# Format, re-stage, and commit in one step:
+.\format-staged.ps1 "your commit message"
+```
+
 ## ToDo
 
 - Version the .scene file format
