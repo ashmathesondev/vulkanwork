@@ -36,6 +36,12 @@ set(SHADERS
     ${SHADER_SRC_DIR}/debug_heatmap.frag
     ${SHADER_SRC_DIR}/debug_lines.vert
     ${SHADER_SRC_DIR}/debug_lines.frag
+    ${SHADER_SRC_DIR}/gsplat_preprocess.comp
+    ${SHADER_SRC_DIR}/gsplat_sort_hist.comp
+    ${SHADER_SRC_DIR}/gsplat_sort_prefix.comp
+    ${SHADER_SRC_DIR}/gsplat_sort_scatter.comp
+    ${SHADER_SRC_DIR}/gsplat.vert
+    ${SHADER_SRC_DIR}/gsplat.frag
 )
 
 foreach(SHADER ${SHADERS})
@@ -113,6 +119,12 @@ add_custom_command(
         shaders/debug_heatmap.frag.spv=${SHADER_BIN_DIR}/debug_heatmap.frag.spv
         shaders/debug_lines.vert.spv=${SHADER_BIN_DIR}/debug_lines.vert.spv
         shaders/debug_lines.frag.spv=${SHADER_BIN_DIR}/debug_lines.frag.spv
+        shaders/gsplat_preprocess.comp.spv=${SHADER_BIN_DIR}/gsplat_preprocess.comp.spv
+        shaders/gsplat_sort_hist.comp.spv=${SHADER_BIN_DIR}/gsplat_sort_hist.comp.spv
+        shaders/gsplat_sort_prefix.comp.spv=${SHADER_BIN_DIR}/gsplat_sort_prefix.comp.spv
+        shaders/gsplat_sort_scatter.comp.spv=${SHADER_BIN_DIR}/gsplat_sort_scatter.comp.spv
+        shaders/gsplat.vert.spv=${SHADER_BIN_DIR}/gsplat.vert.spv
+        shaders/gsplat.frag.spv=${SHADER_BIN_DIR}/gsplat.frag.spv
         textures/grids/1024/BlueGrid.png=${CMAKE_SOURCE_DIR}/textures/grids/1024/BlueGrid.png
     COMMAND pak_packer -v ${CMAKE_BINARY_DIR}/assets.pak
     DEPENDS shaders pak_packer

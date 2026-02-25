@@ -4,6 +4,7 @@
 #include "config.h"
 #include "cube.h"
 #include "debugLines.h"
+#include "gaussianSplats.h"
 #include "loaders/gltfLoader.h"
 
 #define GLM_FORCE_RADIANS
@@ -347,6 +348,13 @@ std::optional<Renderer::FrameContext> Renderer::begin_frame()
 							 0, 1, &memBarrier, 0, nullptr, 1, &depthBarrier);
 	}
 
+	// ---- 4b. Gaussian splat compute (preprocess + radix sort) ----
+	if (splatSystem_ && splatSystem_->has_splats())
+	{
+		splatSystem_->dispatch_compute(cmd, currentFrame_, swapchainExtent_,
+									   frameDescriptorSets_[currentFrame_]);
+	}
+
 	// ---- 5. Begin main shading render pass (depth loadOp=LOAD) ----
 	std::array<VkClearValue, 2> clears{};
 	clears[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};
@@ -483,6 +491,10 @@ void Renderer::draw_scene(VkCommandBuffer cmd)
 		vkCmdBindVertexBuffers(cmd, 0, 1, vbufs, offs);
 		vkCmdDraw(cmd, debugLineVertexCount_, 1, 0, 0);
 	}
+
+	// ---- Gaussian splat draw (alpha-blended, after all opaque geometry) ----
+	if (splatSystem_ && splatSystem_->has_splats())
+		splatSystem_->record_draw(cmd, currentFrame_);
 }
 
 void Renderer::end_frame(const FrameContext& ctx)

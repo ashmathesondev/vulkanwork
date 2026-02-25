@@ -17,6 +17,7 @@
 #include "texture.h"
 
 struct Camera;
+class GaussianSplatSystem;
 
 // =============================================================================
 // Forward+ rendering constants
@@ -64,6 +65,12 @@ struct Renderer
 	VkQueue vk_graphics_queue() const;
 	uint32_t swapchain_image_count() const;
 	VkRenderPass vk_render_pass() const;
+	VkCommandPool vk_command_pool_() const { return commandPool_; }
+
+	// Gaussian Splat System (optional, set by App)
+	void set_splat_system(GaussianSplatSystem* s) { splatSystem_ = s; }
+	VkDescriptorSetLayout frame_set_layout() const { return frameSetLayout_; }
+	pak::PackFile& pack_file() { return *packFile_; }
 
 	// Heatmap toggle (controlled from ImGui)
 	bool showHeatmap_ = false;
@@ -90,6 +97,9 @@ struct Renderer
 	void delete_mesh(uint32_t meshIdx);
 
    private:
+	// Gaussian splat system (non-owning pointer, set by App)
+	GaussianSplatSystem* splatSystem_ = nullptr;
+
 	// Asset pack
 	std::optional<pak::PackFile> packFile_;
 

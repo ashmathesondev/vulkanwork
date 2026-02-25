@@ -1,0 +1,66 @@
+#version 450
+
+// =============================================================================
+// Gaussian Splat Radix Sort — Prefix sum pass
+// =============================================================================
+// Single workgroup (256 threads, one per digit).
+// For each digit d, compute the exclusive prefix sum of histogram[d*numWG + 0..numWG-1].
+// Write the global start offset for digit d, workgroup w, into prefix[d*numWG + w].
+// After this pass, prefix[d*numWG + w] = sum of histogram[d*numWG + 0..w-1]
+//                                         + sum of all digits < d across all WGs.
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform FrameUBO {
+    mat4 view; mat4 proj; mat4 invProj;
+    vec3 cameraPos; uint lightCount;
+    vec3 ambientColor; uint tileCountX; uint tileCountY;
+    uint screenWidth; uint screenHeight;
+} frame;
+
+layout(std430, set = 1, binding = 0) readonly buffer SplatBuffer   { float splatData[]; };
+layout(std430, set = 1, binding = 1) readonly buffer PreprocBuffer { float preprocData[]; };
+layout(std430, set = 1, binding = 2) readonly buffer KeysA { uint keysA[]; };
+layout(std430, set = 1, binding = 3) readonly buffer KeysB { uint keysB[]; };
+layout(std430, set = 1, binding = 4) readonly buffer ValsA { uint valsA[]; };
+layout(std430, set = 1, binding = 5) readonly buffer ValsB { uint valsB[]; };
+layout(std430, set = 1, binding = 6) readonly buffer HistogramBuffer { uint histogram[]; };
+layout(std430, set = 1, binding = 7) buffer PrefixBuffer { uint prefix[]; };
+
+layout(push_constant) uniform PC {
+    uint N;
+    uint shift;
+    uint ping;
+    uint numWG;
+} push;
+
+// Each thread handles one digit; shared memory stores the running total per digit.
+shared uint digitTotals[256];
+
+void main()
+{
+    uint digit = gl_LocalInvocationID.x;  // 0..255
+    uint numWG = push.numWG;
+
+    // ---- Step 1: compute the total count for this digit --------------------
+    uint total = 0u;
+    for (uint w = 0u; w < numWG; ++w)
+        total += histogram[digit * numWG + w];
+    digitTotals[digit] = total;
+    barrier();
+
+    // ---- Step 2: compute global start offset for this digit ----------------
+    // = sum of all totals for digits 0 .. digit-1
+    uint globalStart = 0u;
+    for (uint d = 0u; d < digit; ++d)
+        globalStart += digitTotals[d];
+    barrier();
+
+    // ---- Step 3: fill prefix table for this digit --------------------------
+    // prefix[digit * numWG + w] = globalStart + sum(histogram[digit * numWG + 0..w-1])
+    uint localExcl = globalStart;
+    for (uint w = 0u; w < numWG; ++w) {
+        prefix[digit * numWG + w] = localExcl;
+        localExcl += histogram[digit * numWG + w];
+    }
+}

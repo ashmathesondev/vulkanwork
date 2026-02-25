@@ -17,6 +17,7 @@
 
 #include "config.h"
 #include "editor/sceneFile.h"
+#include "loaders/gaussianSplatLoader.h"
 #include "logger.h"
 
 // =============================================================================
@@ -76,6 +77,15 @@ void App::init_vulkan()
 	build_scene_graph();
 	init_imgui();
 
+	// Initialise Gaussian Splat system
+	splatSystem_.emplace();
+	splatSystem_->init(renderer.vk_device(), renderer.vk_physical_device(),
+					   renderer.vk_command_pool_(),
+					   renderer.vk_graphics_queue(), renderer.vk_render_pass(),
+					   renderer.frame_set_layout(),
+					   Renderer::MAX_FRAMES_IN_FLIGHT, renderer.pack_file());
+	renderer.set_splat_system(&*splatSystem_);
+
 	// Initialize default lights (matching previous hardcoded directional)
 	DirectionalLight sun;
 	sun.direction = glm::normalize(glm::vec3(0.5f, -1.0f, 0.3f));
@@ -120,6 +130,8 @@ void App::main_loop()
 				if (ImGui::MenuItem("Save Scene As...")) showSaveDialog_ = true;
 				ImGui::Separator();
 				if (ImGui::MenuItem("Import Mesh...")) showImportDialog_ = true;
+				if (ImGui::MenuItem("Import Gaussian Splat (.ply)..."))
+					showSplatImportDialog_ = true;
 				ImGui::Separator();
 				if (ImGui::MenuItem("Exit"))
 					glfwSetWindowShouldClose(window, true);
@@ -162,6 +174,14 @@ void App::main_loop()
 													".gltf,.glb", config);
 			showImportDialog_ = false;
 		}
+		if (showSplatImportDialog_)
+		{
+			IGFD::FileDialogConfig config;
+			config.path = ".";
+			ImGuiFileDialog::Instance()->OpenDialog(
+				"ImportSplat", "Import Gaussian Splat", ".ply", config);
+			showSplatImportDialog_ = false;
+		}
 
 		// Render file dialogs
 		if (ImGuiFileDialog::Instance()->Display("LoadScene"))
@@ -180,6 +200,12 @@ void App::main_loop()
 		{
 			if (ImGuiFileDialog::Instance()->IsOk())
 				do_import_mesh(ImGuiFileDialog::Instance()->GetFilePathName());
+			ImGuiFileDialog::Instance()->Close();
+		}
+		if (ImGuiFileDialog::Instance()->Display("ImportSplat"))
+		{
+			if (ImGuiFileDialog::Instance()->IsOk())
+				do_load_splat(ImGuiFileDialog::Instance()->GetFilePathName());
 			ImGuiFileDialog::Instance()->Close();
 		}
 
@@ -537,6 +563,20 @@ void App::do_import_mesh(const std::string& path)
 	sceneGraph.update_world_transforms();
 }
 
+void App::do_load_splat(const std::string& path)
+{
+	LOG_INFO("Loading Gaussian Splat: %s", path.c_str());
+	GaussianSplatCloud cloud = load_gaussian_splat_ply(path);
+	if (cloud.splats.empty())
+	{
+		LOG_WARN("Gaussian Splat load failed or empty: %s", path.c_str());
+		return;
+	}
+	LOG_INFO("Loaded %zu splats — uploading to GPU...", cloud.splats.size());
+	splatSystem_->load(cloud);
+	LOG_INFO("Gaussian Splat upload complete.");
+}
+
 void App::do_delete_selected()
 {
 	if (!selection.selectedNode.has_value()) return;
@@ -648,6 +688,8 @@ void App::cleanup()
 	ImGui_ImplGlfw_Shutdown();
 	ImGui::DestroyContext();
 	vkDestroyDescriptorPool(renderer.vk_device(), imguiPool, nullptr);
+
+	if (splatSystem_) splatSystem_->cleanup();
 
 	renderer.cleanup();
 

@@ -1,0 +1,252 @@
+#version 450
+
+// =============================================================================
+// Gaussian Splat Preprocess
+// =============================================================================
+// Per-splat: project 3D Gaussian -> 2D screen ellipse, evaluate SH for color,
+// compute depth sort key (sortable uint for back-to-front).
+//
+// Set 0, binding 0: FrameUBO  (shared with renderer)
+// Set 1: splat SSBOs
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// ---- FrameUBO (set 0, binding 0) -------------------------------------------
+layout(set = 0, binding = 0) uniform FrameUBO {
+    mat4  view;
+    mat4  proj;
+    mat4  invProj;
+    vec3  cameraPos;
+    uint  lightCount;
+    vec3  ambientColor;
+    uint  tileCountX;
+    uint  tileCountY;
+    uint  screenWidth;
+    uint  screenHeight;
+} frame;
+
+// ---- Splat SSBO (set 1, binding 0) -----------------------------------------
+// Layout: 60 floats per splat (240 bytes), matching RawSplat on CPU:
+//   [0..2]   position
+//   [3]      opacity (pre-sigmoid logit)
+//   [4..7]   rotation wxyz quaternion
+//   [8..10]  scale (pre-exp log-scale)
+//   [11]     pad
+//   [12..59] sh[48]
+layout(std430, set = 1, binding = 0) readonly buffer SplatBuffer {
+    float data[];
+};
+
+// ---- PreprocessBuffer (set 1, binding 1) -----------------------------------
+// Layout: 10 floats per splat (40 bytes):
+//   [0..1] center xy (pixels)
+//   [2..4] cov2d upper-triangle [a, b, c]
+//   [5..7] color rgb
+//   [8]    alpha
+//   [9]    clipDepth (NDC z for depth test)
+layout(std430, set = 1, binding = 1) buffer PreprocessBuffer {
+    float prepData[];
+};
+
+// ---- Sort key / value buffers (set 1, bindings 2..5) -----------------------
+// Preprocess always writes to keysA (binding 2) and valsA (binding 4).
+layout(std430, set = 1, binding = 2) buffer KeysA { uint keysA[]; };
+layout(std430, set = 1, binding = 3) buffer KeysB { uint keysB[]; };
+layout(std430, set = 1, binding = 4) buffer ValsA { uint valsA[]; };
+layout(std430, set = 1, binding = 5) buffer ValsB { uint valsB[]; };
+// (hist / prefix bindings 6 / 7 not used here)
+
+layout(push_constant) uniform PC { uint N; } push;
+
+// ---- Spherical harmonics constants -----------------------------------------
+const float C0  = 0.28209479177387814;
+const float C1  = 0.4886025119029199;
+const float C2_0 =  1.0925484305920792;
+const float C2_1 = -1.0925484305920792;
+const float C2_2 =  0.31539156525252005;
+const float C2_3 = -1.0925484305920792;
+const float C2_4 =  0.5462742152960396;
+const float C3_0 = -0.5900435899266435;
+const float C3_1 =  2.890611442640554;
+const float C3_2 = -0.4570457994644658;
+const float C3_3 =  0.3731763325901154;
+const float C3_4 = -0.4570457994644658;
+const float C3_5 =  1.4453057213188392;
+const float C3_6 = -0.5900435899266435;
+
+// ---- Sigmoid ---------------------------------------------------------------
+float sigmoid(float x) { return 1.0 / (1.0 + exp(-x)); }
+
+// ---- Float-to-sortable-uint (handles negative floats) ----------------------
+// Transforms IEEE 754 float bit pattern so that the uint ordering matches
+// the float ordering, enabling radix sort on arbitrary floats.
+uint float_to_sort_key(float f)
+{
+    uint bits = floatBitsToUint(f);
+    uint mask = uint(-int(bits >> 31)) | 0x80000000u;
+    return bits ^ mask;
+}
+
+// ---- Build 3x3 covariance from quaternion (wxyz) + log-scale ---------------
+// Returns upper-triangle of Σ = R * S^2 * R^T (symmetric 3x3)
+// q = (w, x, y, z)
+mat3 quat_to_rotation(vec4 q)
+{
+    float w = q.x, x = q.y, y = q.z, z = q.w;
+    return mat3(
+        1.0 - 2.0*(y*y + z*z),  2.0*(x*y - w*z),        2.0*(x*z + w*y),
+        2.0*(x*y + w*z),        1.0 - 2.0*(x*x + z*z),  2.0*(y*z - w*x),
+        2.0*(x*z - w*y),        2.0*(y*z + w*x),        1.0 - 2.0*(x*x + y*y)
+    );
+}
+
+// Returns upper-left 2x2 of the projected 2D covariance
+// W = view*model (upper-left 3x3 of view matrix), t = view-space position
+vec3 compute_cov2d(mat3 W, vec3 viewPos, vec3 logScale, vec4 rotation)
+{
+    // Scale
+    vec3 s = exp(logScale);
+
+    // Rotation matrix from quaternion
+    mat3 R = quat_to_rotation(rotation);
+
+    // 3D covariance: Sigma3 = R * diag(s^2) * R^T
+    mat3 S = mat3(s.x,0,0, 0,s.y,0, 0,0,s.z);
+    mat3 RS = R * S;
+    mat3 Sigma3 = RS * transpose(RS);
+
+    // Jacobian of perspective projection at viewPos
+    float tx = viewPos.x;
+    float ty = viewPos.y;
+    float tz = viewPos.z;
+    float l  = length(viewPos);
+
+    mat3 J = mat3(
+        1.0/tz,  0.0,    -tx/(tz*tz),
+        0.0,     1.0/tz, -ty/(tz*tz),
+        0.0,     0.0,     0.0
+    );
+
+    // Transform covariance to camera space: W * Sigma3 * W^T
+    // then apply Jacobian: J * (W * Sigma3 * W^T) * J^T
+    // Take upper-left 2x2
+    mat3 T = J * W;
+    mat3 Sigma2_3d = T * Sigma3 * transpose(T);
+
+    // Return [a, b, c] = upper-triangle of the 2x2 part
+    return vec3(Sigma2_3d[0][0] + 0.3,  // small diagonal bias to prevent degenerate
+                Sigma2_3d[0][1],
+                Sigma2_3d[1][1] + 0.3);
+}
+
+// ---- Evaluate SH for one channel -------------------------------------------
+// sh16: 16 coefficients (dc at [0], higher-order [1..15])
+float eval_sh_channel(float[16] sh16, vec3 dir)
+{
+    float x = dir.x, y = dir.y, z = dir.z;
+    float r = C0 * sh16[0];
+
+    r += C1 * (-y * sh16[1] + z * sh16[2] - x * sh16[3]);
+
+    float xx = x*x, yy = y*y, zz = z*z;
+    float xy = x*y, xz = x*z, yz = y*z;
+    r += C2_0 * xy         * sh16[4];
+    r += C2_1 * yz         * sh16[5];
+    r += C2_2 * (2.0*zz - xx - yy) * sh16[6];
+    r += C2_3 * xz         * sh16[7];
+    r += C2_4 * (xx - yy)  * sh16[8];
+
+    r += C3_0 * y * (3.0*xx - yy)     * sh16[9];
+    r += C3_1 * xy * z                 * sh16[10];
+    r += C3_2 * y * (4.0*zz - xx - yy)* sh16[11];
+    r += C3_3 * z * (2.0*zz - 3.0*xx - 3.0*yy) * sh16[12];
+    r += C3_4 * x * (4.0*zz - xx - yy)* sh16[13];
+    r += C3_5 * z * (xx - yy)          * sh16[14];
+    r += C3_6 * x * (xx - 3.0*yy)     * sh16[15];
+
+    return r + 0.5;  // DC offset: SH encode color-0.5
+}
+
+void main()
+{
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= push.N) return;
+
+    // ---- Read raw splat (60 floats = 240 bytes) ----------------------------
+    uint base = idx * 60u;
+    vec3  pos     = vec3(data[base+0], data[base+1], data[base+2]);
+    float opacity = data[base+3];
+    vec4  rot     = vec4(data[base+4], data[base+5], data[base+6], data[base+7]);
+    vec3  scale   = vec3(data[base+8], data[base+9], data[base+10]);
+
+    // sh layout in RawSplat:
+    //   sh[0]  = R_dc,  sh[1] = G_dc,  sh[2] = B_dc   (indices 12,13,14 in data)
+    //   sh[3..17]  = R higher-order    (data[15..29])
+    //   sh[18..32] = G higher-order    (data[30..44])
+    //   sh[33..47] = B higher-order    (data[45..59])
+    uint shBase = base + 12u;
+
+    // ---- Transform to view space -------------------------------------------
+    vec4  viewPos4 = frame.view * vec4(pos, 1.0);
+    vec3  viewPos  = viewPos4.xyz;
+
+    // Cull behind camera
+    if (viewPos.z >= 0.0) {
+        // Write a "skip" marker: alpha = 0
+        prepData[idx*10u + 8u] = 0.0;
+        keysA[idx] = 0u;
+        valsA[idx] = idx;
+        return;
+    }
+
+    // ---- Project center to screen pixels -----------------------------------
+    vec4 clipPos = frame.proj * vec4(viewPos, 1.0);
+    vec3 ndc     = clipPos.xyz / clipPos.w;
+    vec2 center  = vec2(
+        ( ndc.x * 0.5 + 0.5) * float(frame.screenWidth),
+        (-ndc.y * 0.5 + 0.5) * float(frame.screenHeight)  // flip Y for screen
+    );
+    float clipDepth = ndc.z;  // z in [0,1] for Vulkan
+
+    // ---- 2D covariance projection ------------------------------------------
+    mat3 W    = mat3(frame.view);  // upper-left 3x3
+    vec3 cov2d = compute_cov2d(W, viewPos, scale, rot);
+
+    // ---- Spherical harmonics -----------------------------------------------
+    vec3 dir = normalize(pos - frame.cameraPos);  // world-space, splat->camera dir
+
+    float rSH[16], gSH[16], bSH[16];
+    rSH[0] = data[shBase + 0u]; // R_dc
+    gSH[0] = data[shBase + 1u]; // G_dc
+    bSH[0] = data[shBase + 2u]; // B_dc
+    for (int k = 0; k < 15; ++k) {
+        rSH[1+k] = data[shBase + 3u  + uint(k)];
+        gSH[1+k] = data[shBase + 18u + uint(k)];
+        bSH[1+k] = data[shBase + 33u + uint(k)];
+    }
+
+    float r = clamp(eval_sh_channel(rSH, dir), 0.0, 1.0);
+    float g = clamp(eval_sh_channel(gSH, dir), 0.0, 1.0);
+    float b = clamp(eval_sh_channel(bSH, dir), 0.0, 1.0);
+
+    float alpha = sigmoid(opacity);
+
+    // ---- Write preprocessBuffer (10 floats per splat) ----------------------
+    uint out0 = idx * 10u;
+    prepData[out0 + 0u] = center.x;
+    prepData[out0 + 1u] = center.y;
+    prepData[out0 + 2u] = cov2d.x;   // a
+    prepData[out0 + 3u] = cov2d.y;   // b
+    prepData[out0 + 4u] = cov2d.z;   // c
+    prepData[out0 + 5u] = r;
+    prepData[out0 + 6u] = g;
+    prepData[out0 + 7u] = b;
+    prepData[out0 + 8u] = alpha;
+    prepData[out0 + 9u] = clipDepth;
+
+    // ---- Write sort keys (back-to-front = smaller key = further away) ------
+    // viewPos.z is negative for visible objects; more negative = further.
+    // float_to_sort_key maps so that more-negative floats get smaller uint keys.
+    keysA[idx] = float_to_sort_key(viewPos.z);
+    valsA[idx] = idx;
+}
