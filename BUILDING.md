@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - [CMake](https://cmake.org/) 3.20+
-- [vcpkg](https://github.com/microsoft/vcpkg) (expected at `D:/vcpkg` — edit `Makefile` to change)
+- [vcpkg](https://github.com/microsoft/vcpkg) — set the `VCPKG_ROOT` environment variable to your installation directory
 - [GNU Make](https://www.gnu.org/software/make/)
 - A C++20 compiler (MSVC, Clang, GCC)
 - Vulkan-capable GPU and drivers
@@ -59,10 +59,15 @@ build/
 
 ## Configuring vcpkg Path
 
-The Makefile defaults to `D:/vcpkg`. To override without editing the file:
+The Makefile requires the `VCPKG_ROOT` environment variable to be set. You can set it permanently in your shell profile, or pass it inline:
 
 ```powershell
-make build VCPKG_ROOT=C:/path/to/vcpkg
+$env:VCPKG_ROOT = "E:/vcpkg"   # PowerShell (current session)
+make build
+```
+
+```powershell
+make build VCPKG_ROOT=E:/vcpkg  # inline override
 ```
 
 ## Opening in Visual Studio
