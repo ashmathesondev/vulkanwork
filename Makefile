@@ -1,6 +1,6 @@
 SHELL       := powershell.exe
 .SHELLFLAGS := -NoProfile -Command
-VCPKG_ROOT  ?= D:/vcpkg
+VCPKG_ROOT  ?= E:/vcpkg
 TRIPLET     := x64-windows
 TOOLCHAIN   := $(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake
 CMAKE_FLAGS := -DCMAKE_TOOLCHAIN_FILE=$(TOOLCHAIN) \

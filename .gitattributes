@@ -1,21 +1,29 @@
 # Auto-detect text files and normalize line endings
 * text=auto
 # Source code
-*.cpp text
-*.h text
-*.hpp text
-*.c text
-*.in text
+*.c     text diff=cpp linguist-language=C
+*.cc    text diff=cpp linguist-language=C++
+*.cxx   text diff=cpp linguist-language=C++
+*.cpp   text diff=cpp linguist-language=C++
+*.cpi   text diff=cpp linguist-language=C++
+*.c++   text diff=cpp linguist-language=C++
+*.hpp   text diff=cpp linguist-language=C++
+*.h     text diff=cpp linguist-language=C++
+*.h++   text diff=cpp linguist-language=C++
+*.hh    text diff=cpp linguist-language=C++
+
 # Build / config
-*.cmake text
-*.json text
-*.txt text
-Makefile text
+*.cmake text diff=cmake linguist-language=CMake
+*.json  text diff=json linguist-language=JSON
+*.txt   text diff=text linguist-language=Text
+Makefile text diff=makefile linguist-language=Makefile
+
 # Shaders
-*.vert text
-*.frag text
-*.comp text
-*.glsl text
+*.vert text diff=glsl linguist-language=GLSL
+*.frag text diff=glsl linguist-language=GLSL
+*.comp text diff=glsl linguist-language=GLSL
+*.glsl text diff=glsl linguist-language=GLSL
+
 # SPIR-V binaries
 *.spv binary
 *.glb filter=lfs diff=lfs merge=lfs -text
