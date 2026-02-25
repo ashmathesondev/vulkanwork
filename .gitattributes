@@ -56,8 +56,8 @@ Makefile text diff=makefile linguist-detectable=false
 # 3D/Art source files - binary or vendor, exclude from stats
 *.xcf   binary linguist-generated=true
 *.max   binary linguist-generated=true
-*.ma    text linguist-detectable=false
+*.ma    binary linguist-detectable=false
 *.bin   binary linguist-generated=true
 *.zip   binary linguist-generated=true
 *.blend1 binary linguist-generated=true
-*.svg   text linguist-detectable=false
+*.svg   binary linguist-detectable=false
