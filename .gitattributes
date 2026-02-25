@@ -39,3 +39,16 @@ Makefile text diff=makefile linguist-detectable=false
 
 # SPIR-V binaries - perfect
 *.spv binary
+
+# Exclude ALL LFS assets from language stats
+*.glb linguist-generated=true
+*.tif linguist-generated=true
+*.png linguist-generated=true
+*.dae linguist-generated=true
+*.jpg linguist-generated=true
+*.tga linguist-generated=true
+*.fbx linguist-generated=true
+*.blend linguist-generated=true
+*.gltf linguist-generated=true
+*.pak linguist-generated=true
+*.spv linguist-generated=true
