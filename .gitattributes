@@ -1,28 +1,28 @@
 # Auto-detect text files and normalize line endings
 * text=auto
 # Source code
-*.c     text diff=cpp linguist-detectable=false
-*.cc    text diff=cpp linguist-detectable=false
-*.cxx   text diff=cpp linguist-detectable=false
-*.cpp   text diff=cpp linguist-detectable=false
-*.cpi   text diff=cpp linguist-detectable=false
-*.c++   text diff=cpp linguist-detectable=false
-*.hpp   text diff=cpp linguist-detectable=false
-*.h     text diff=cpp linguist-detectable=false
-*.h++   text diff=cpp linguist-detectable=false
-*.hh    text diff=cpp linguist-detectable=false
+*.c     text diff=cpp linguist-language=C++
+*.cc    text diff=cpp linguist-language=C++
+*.cxx   text diff=cpp linguist-language=C++
+*.cpp   text diff=cpp linguist-language=C++
+*.cpi   text diff=cpp linguist-language=C++
+*.c++   text diff=cpp linguist-language=C++
+*.hpp   text diff=cpp linguist-language=C++
+*.h     text diff=cpp linguist-language=C++
+*.h++   text diff=cpp linguist-language=C++
+*.hh    text diff=cpp linguist-language=C++
 
 # Build / config
-*.cmake text diff=cmake linguist-detectable=false
-*.json  text diff=json linguist-detectable=false
-*.txt   text diff=text linguist-detectable=false
-Makefile text diff=makefile linguist-detectable=false
+*.cmake text diff=cmake linguist-language=C++
+*.json  text diff=json linguist-language=C++
+*.txt   text diff=text linguist-language=C++
+Makefile text diff=makefile linguist-language=C++
 
 # Shaders
-*.vert text diff=glsl linguist-detectable=false
-*.frag text diff=glsl linguist-detectable=false
-*.comp text diff=glsl linguist-detectable=false
-*.glsl text diff=glsl linguist-detectable=false
+*.vert text diff=glsl linguist-language=GLSL
+*.frag text diff=glsl linguist-language=GLSL
+*.comp text diff=glsl linguist-language=GLSL
+*.glsl text diff=glsl linguist-language=GLSL
 
 # SPIR-V binaries
 *.spv binary
