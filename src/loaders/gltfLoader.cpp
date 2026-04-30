@@ -11,6 +11,7 @@
 #include <tiny_gltf.h>
 
 #include <cstdio>
+#include <cstring>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -140,6 +141,68 @@ static int accessor_stride(const tinygltf::Model& model,
 			break;
 	}
 	return compSize * numComps;
+}
+
+static size_t component_byte_size(int componentType)
+{
+	switch (componentType)
+	{
+		case TINYGLTF_COMPONENT_TYPE_BYTE:
+		case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+			return 1;
+		case TINYGLTF_COMPONENT_TYPE_SHORT:
+		case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+			return 2;
+		case TINYGLTF_COMPONENT_TYPE_INT:
+		case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
+		case TINYGLTF_COMPONENT_TYPE_FLOAT:
+			return 4;
+		case TINYGLTF_COMPONENT_TYPE_DOUBLE:
+			return 8;
+		default:
+			return 0;
+	}
+}
+
+static float read_texcoord_component(const uint8_t* data, int componentType,
+									 bool normalized)
+{
+	switch (componentType)
+	{
+		case TINYGLTF_COMPONENT_TYPE_FLOAT:
+		{
+			float value;
+			std::memcpy(&value, data, sizeof(value));
+			return value;
+		}
+		case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+			return normalized ? static_cast<float>(*data) / 255.0f
+							  : static_cast<float>(*data);
+		case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+		{
+			uint16_t value;
+			std::memcpy(&value, data, sizeof(value));
+			return normalized ? static_cast<float>(value) / 65535.0f
+							  : static_cast<float>(value);
+		}
+		default:
+			throw std::runtime_error("Unsupported TEXCOORD_0 component type");
+	}
+}
+
+static glm::vec2 read_texcoord(const uint8_t* data,
+							   const tinygltf::Accessor& acc)
+{
+	if (acc.type != TINYGLTF_TYPE_VEC2)
+		throw std::runtime_error("TEXCOORD_0 accessor must be VEC2");
+
+	size_t compSize = component_byte_size(acc.componentType);
+	if (compSize == 0)
+		throw std::runtime_error("Unsupported TEXCOORD_0 component type");
+
+	return {read_texcoord_component(data, acc.componentType, acc.normalized),
+			read_texcoord_component(data + compSize, acc.componentType,
+									acc.normalized)};
 }
 
 static glm::vec3 safe_normalize_tangent(const glm::vec3& tangent,
@@ -324,9 +387,8 @@ static void extract_node(const tinygltf::Model& model, int nodeIdx,
 					accessor_data<uint8_t>(model, acc));
 				for (size_t i = 0; i < vertexCount; ++i)
 				{
-					const float* p =
-						reinterpret_cast<const float*>(base + i * stride);
-					cpuMesh.vertices[i].uv = {p[0], p[1]};
+					cpuMesh.vertices[i].uv =
+						read_texcoord(base + i * stride, acc);
 				}
 			}
 
