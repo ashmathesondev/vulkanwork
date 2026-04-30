@@ -142,6 +142,23 @@ static int accessor_stride(const tinygltf::Model& model,
 	return compSize * numComps;
 }
 
+static glm::vec3 safe_normalize_tangent(const glm::vec3& tangent,
+										const glm::vec3& normal)
+{
+	float normalLen2 = glm::dot(normal, normal);
+	glm::vec3 n = normalLen2 > 1e-12f ? normal * glm::inversesqrt(normalLen2)
+									  : glm::vec3(0.0f, 0.0f, 1.0f);
+
+	float len2 = glm::dot(tangent, tangent);
+	if (len2 > 1e-12f) return tangent * glm::inversesqrt(len2);
+
+	glm::vec3 fallback = std::abs(n.x) < 0.9f ? glm::vec3(1.0f, 0.0f, 0.0f)
+											  : glm::vec3(0.0f, 1.0f, 0.0f);
+
+	glm::vec3 orthogonal = fallback - n * glm::dot(n, fallback);
+	return glm::normalize(orthogonal);
+}
+
 static void compute_tangents(std::vector<Vertex>& verts,
 							 const std::vector<uint32_t>& indices)
 {
@@ -179,10 +196,16 @@ static void compute_tangents(std::vector<Vertex>& verts,
 	{
 		const glm::vec3& n = verts[i].normal;
 		const glm::vec3& t = tan1[i];
+		float normalLen2 = glm::dot(n, n);
+		glm::vec3 safeNormal = normalLen2 > 1e-12f
+								   ? n * glm::inversesqrt(normalLen2)
+								   : glm::vec3(0.0f, 0.0f, 1.0f);
 
 		// Gram-Schmidt orthogonalize
-		glm::vec3 ortho = glm::normalize(t - n * glm::dot(n, t));
-		float w = (glm::dot(glm::cross(n, t), tan2[i]) < 0.0f) ? -1.0f : 1.0f;
+		glm::vec3 ortho = safe_normalize_tangent(
+			t - safeNormal * glm::dot(safeNormal, t), safeNormal);
+		float w = (glm::dot(glm::cross(safeNormal, t), tan2[i]) < 0.0f) ? -1.0f
+																		: 1.0f;
 		verts[i].tangent = glm::vec4(ortho, w);
 	}
 }
@@ -479,8 +502,8 @@ Scene load_gltf(const std::string& path)
 
 	Scene scene;
 
-	extract_textures(model, scene);
 	extract_materials(model, scene);
+	extract_textures(model, scene);
 
 	// Walk scene nodes
 	const auto& gltfScene =

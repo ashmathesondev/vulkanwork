@@ -479,8 +479,19 @@ void App::do_load_scene(const std::string& path)
 		// Backward compatibility: if node has no modelPath, use the global one
 		if (node.modelPath.empty())
 		{
-			node.modelPath = data.modelPath;
-			node.meshIndexInModel = node.meshIndex.value();
+			bool looksLikeLegacyCube =
+				node.name == "Cube" &&
+				(data.modelPath.empty() || node.meshIndex.value() != 0);
+			if (looksLikeLegacyCube)
+			{
+				node.modelPath = "internal://cube";
+				node.meshIndexInModel = 0;
+			}
+			else
+			{
+				node.modelPath = data.modelPath;
+				node.meshIndexInModel = node.meshIndex.value();
+			}
 		}
 
 		if (node.modelPath.empty()) continue;

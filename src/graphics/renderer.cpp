@@ -1584,6 +1584,8 @@ void Renderer::add_cube_to_scene(Scene& scene)
 	// Append cube mesh
 	Mesh cube = make_cube_mesh();
 	cube.name = "Cube";
+	cube.sourcePath = "internal://cube";
+	cube.sourceMeshIndex = 0;
 	cube.materialIndex = cubeMaterialIdx;
 	cube.transform =
 		glm::translate(glm::mat4(1.0f), glm::vec3(-3.0f, 0.0f, 0.0f));
