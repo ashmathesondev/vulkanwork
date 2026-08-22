@@ -1,8 +1,5 @@
 #pragma once
 
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-
 #include <array>
 #include <glm/glm.hpp>
 #include <optional>
@@ -13,6 +10,7 @@
 #include "material.h"
 #include "mesh.h"
 #include "pak/packfile.h"
+#include "platform/platform.h"
 #include "scene.h"
 #include "texture.h"
 
@@ -36,7 +34,7 @@ struct Renderer
 	static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
 	// Lifecycle
-	void init(GLFWwindow* window, const std::string& modelPath);
+	void init(PlatformWindow* window, const std::string& modelPath);
 	void cleanup();
 
 	// Per-frame rendering
@@ -104,7 +102,7 @@ struct Renderer
 	std::optional<pak::PackFile> packFile_;
 
 	// Window (non-owning)
-	GLFWwindow* window_ = nullptr;
+	PlatformWindow* window_ = nullptr;
 
 	// Core Vulkan
 	VkInstance instance_ = VK_NULL_HANDLE;

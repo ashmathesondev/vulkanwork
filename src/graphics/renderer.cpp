@@ -6,6 +6,7 @@
 #include "debugLines.h"
 #include "gaussianSplats.h"
 #include "loaders/gltfLoader.h"
+#include "platform/platform.h"
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -101,10 +102,10 @@ void Renderer::notify_resize() { framebufferResized_ = true; }
 // Lifecycle
 // =============================================================================
 
-void Renderer::init(GLFWwindow* window, const std::string& modelPath)
+void Renderer::init(PlatformWindow* window, const std::string& modelPath)
 {
 	window_ = window;
-	packFile_.emplace(PAK_FILE);
+	packFile_.emplace(platform::pak_file_path());
 	create_instance();
 	setup_debug_messenger();
 	create_surface();
@@ -425,13 +426,6 @@ void Renderer::draw_scene(VkCommandBuffer cmd)
 {
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pbrPipeline_);
 
-	// Dynamic rasterizer state (debug toggles)
-	vkCmdSetCullMode(
-		cmd, debugDisableCulling_ ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
-	vkCmdSetFrontFace(cmd, debugFrontFace_ == 1
-							   ? VK_FRONT_FACE_CLOCKWISE
-							   : VK_FRONT_FACE_COUNTER_CLOCKWISE);
-
 	// Bind frame descriptor set (set 0)
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
 							pbrPipelineLayout_, 0, 1,
@@ -556,11 +550,10 @@ void Renderer::create_instance()
 	appInfo.pApplicationName = "vulkanwork";
 	appInfo.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
 	appInfo.pEngineName = "none";
-	appInfo.apiVersion = VK_API_VERSION_1_3;
+	appInfo.apiVersion = VK_API_VERSION_1_1;
 
-	uint32_t glfwExtCnt;
-	const char** glfwExts = glfwGetRequiredInstanceExtensions(&glfwExtCnt);
-	std::vector<const char*> exts(glfwExts, glfwExts + glfwExtCnt);
+	std::vector<const char*> exts =
+		platform::required_vulkan_instance_extensions();
 	if (useValidation) exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
 	VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
@@ -595,7 +588,7 @@ void Renderer::setup_debug_messenger()
 
 void Renderer::create_surface()
 {
-	VK_CHECK(glfwCreateWindowSurface(instance_, window_, nullptr, &surface_));
+	VK_CHECK(platform::create_vulkan_surface(instance_, window_, &surface_));
 }
 
 // =============================================================================
@@ -738,7 +731,7 @@ void Renderer::create_swapchain()
 	else
 	{
 		int w, h;
-		glfwGetFramebufferSize(window_, &w, &h);
+		platform::framebuffer_size(window_, w, h);
 		extent.width =
 			std::clamp(static_cast<uint32_t>(w), caps.minImageExtent.width,
 					   caps.maxImageExtent.width);
@@ -798,11 +791,11 @@ void Renderer::create_image_views()
 void Renderer::recreate_swapchain()
 {
 	int w = 0, h = 0;
-	glfwGetFramebufferSize(window_, &w, &h);
+	platform::framebuffer_size(window_, w, h);
 	while (w == 0 || h == 0)
 	{
-		glfwGetFramebufferSize(window_, &w, &h);
-		glfwWaitEvents();
+		platform::framebuffer_size(window_, w, h);
+		platform::wait_events();
 	}
 	vkDeviceWaitIdle(device_);
 
@@ -919,8 +912,9 @@ void Renderer::create_pbr_descriptor_layouts()
 		uboBinding.binding = 0;
 		uboBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		uboBinding.descriptorCount = 1;
-		uboBinding.stageFlags =
-			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+		uboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT |
+								VK_SHADER_STAGE_FRAGMENT_BIT |
+								VK_SHADER_STAGE_COMPUTE_BIT;
 
 		VkDescriptorSetLayoutCreateInfo ci{
 			VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -1025,12 +1019,11 @@ void Renderer::create_pbr_pipeline()
 	blend.attachmentCount = 1;
 	blend.pAttachments = &blendAtt;
 
-	VkDynamicState dynStates[] = {
-		VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
-		VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE};
+	VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT,
+								  VK_DYNAMIC_STATE_SCISSOR};
 	VkPipelineDynamicStateCreateInfo dyn{
 		VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-	dyn.dynamicStateCount = 4;
+	dyn.dynamicStateCount = 2;
 	dyn.pDynamicStates = dynStates;
 
 	// Pipeline layout: set 0=frame, set 1=material, set 2=lightData, push=model
@@ -2219,12 +2212,11 @@ void Renderer::create_depth_prepass_pipeline()
 		VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
 	blend.attachmentCount = 0;	// no color attachments
 
-	VkDynamicState dynStates[] = {
-		VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
-		VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE};
+	VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT,
+								  VK_DYNAMIC_STATE_SCISSOR};
 	VkPipelineDynamicStateCreateInfo dyn{
 		VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-	dyn.dynamicStateCount = 4;
+	dyn.dynamicStateCount = 2;
 	dyn.pDynamicStates = dynStates;
 
 	// Layout: set 0 = frame UBO, push constant = model matrix
@@ -2291,13 +2283,6 @@ void Renderer::draw_depth_prepass(VkCommandBuffer cmd)
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
 					  depthPrepassPipeline_);
-
-	// Dynamic rasterizer state (debug toggles)
-	vkCmdSetCullMode(
-		cmd, debugDisableCulling_ ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
-	vkCmdSetFrontFace(cmd, debugFrontFace_ == 1
-							   ? VK_FRONT_FACE_CLOCKWISE
-							   : VK_FRONT_FACE_COUNTER_CLOCKWISE);
 
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
 							depthPrepassPipelineLayout_, 0, 1,

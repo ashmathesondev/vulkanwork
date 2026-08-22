@@ -2,7 +2,6 @@
 
 #include <ImGuiFileDialog.h>
 #include <imgui.h>
-#include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 
 #include <algorithm>
@@ -19,6 +18,7 @@
 #include "editor/sceneFile.h"
 #include "loaders/gaussianSplatLoader.h"
 #include "logger.h"
+#include "platform/platform.h"
 
 // =============================================================================
 // Macros
@@ -50,25 +50,26 @@ void App::run()
 
 void App::init_window()
 {
-	glfwInit();
-	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+	if (!platform::init())
+		throw std::runtime_error("Failed to initialize platform");
 
 	int x, y, w = INITIAL_WIDTH, h = INITIAL_HEIGHT;
 	bool hasConfig = load_window_config(x, y, w, h);
 
-	window = glfwCreateWindow(w, h, "vulkanwork", nullptr, nullptr);
+	window = platform::create_window(w, h, "vulkanwork");
+	if (!window) throw std::runtime_error("Failed to create window");
 
+#ifndef __ANDROID__
 	if (hasConfig) glfwSetWindowPos(window, x, y);
+#else
+	(void)x;
+	(void)y;
+	(void)hasConfig;
+#endif
 
-	glfwSetWindowUserPointer(window, this);
-	glfwSetFramebufferSizeCallback(
-		window,
-		[](GLFWwindow* w, int, int)
-		{
-			static_cast<App*>(glfwGetWindowUserPointer(w))
-				->renderer.notify_resize();
-		});
+	platform::set_resize_callback(
+		window, this,
+		[](void* app) { static_cast<App*>(app)->renderer.notify_resize(); });
 }
 
 void App::init_vulkan()
@@ -99,11 +100,11 @@ void App::init_vulkan()
 
 void App::main_loop()
 {
-	while (!glfwWindowShouldClose(window))
+	while (!platform::should_close(window))
 	{
-		glfwPollEvents();
+		platform::poll_events();
 
-		float now = static_cast<float>(glfwGetTime());
+		float now = static_cast<float>(platform::time_seconds());
 		deltaTime = now - lastFrameTime;
 		lastFrameTime = now;
 
@@ -111,7 +112,7 @@ void App::main_loop()
 
 		// --- ImGui frame -----------------------------------------------------
 		ImGui_ImplVulkan_NewFrame();
-		ImGui_ImplGlfw_NewFrame();
+		platform::imgui_new_frame();
 		ImGui::NewFrame();
 
 		if (ImGui::BeginMainMenuBar())
@@ -133,8 +134,7 @@ void App::main_loop()
 				if (ImGui::MenuItem("Import Gaussian Splat (.ply)..."))
 					showSplatImportDialog_ = true;
 				ImGui::Separator();
-				if (ImGui::MenuItem("Exit"))
-					glfwSetWindowShouldClose(window, true);
+				if (ImGui::MenuItem("Exit")) platform::request_close(window);
 				ImGui::EndMenu();
 			}
 			ImGui::EndMainMenuBar();
@@ -264,7 +264,7 @@ void App::main_loop()
 		auto frame = renderer.begin_frame();
 		if (!frame) continue;  // swapchain was recreated
 
-		float time = static_cast<float>(glfwGetTime());
+		float time = static_cast<float>(platform::time_seconds());
 		renderer.update_uniforms(camera, time, lights);
 		renderer.update_debug_lines(lights);
 		renderer.draw_scene(frame->cmd);
@@ -283,31 +283,31 @@ void App::main_loop()
 
 void App::process_input()
 {
-	if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-		glfwSetWindowShouldClose(window, true);
+	if (platform::key_down(window, platform::Key::Escape))
+		platform::request_close(window);
 
 	ImGuiIO& io = ImGui::GetIO();
 
 	// --- Mouse look ----------------------------------------------------------
 	bool wantCapture =
-		glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS &&
+		platform::mouse_down(window, platform::MouseButton::Right) &&
 		!io.WantCaptureMouse;
 	if (wantCapture && !mouseCaptured)
 	{
-		glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+		platform::set_mouse_capture(window, true);
 		mouseCaptured = true;
 		firstMouse = true;
 	}
 	else if (!wantCapture && mouseCaptured)
 	{
-		glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+		platform::set_mouse_capture(window, false);
 		mouseCaptured = false;
 	}
 
 	if (mouseCaptured)
 	{
 		double mx, my;
-		glfwGetCursorPos(window, &mx, &my);
+		platform::cursor_pos(window, mx, my);
 
 		if (firstMouse)
 		{
@@ -338,12 +338,12 @@ void App::process_input()
 	// --- Left-click picking --------------------------------------------------
 	if (!io.WantCaptureMouse && !gizmo.is_using())
 	{
-		if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS &&
+		if (platform::mouse_down(window, platform::MouseButton::Left) &&
 			!leftClickHeld)
 		{
 			leftClickHeld = true;
 			double mx, my;
-			glfwGetCursorPos(window, &mx, &my);
+			platform::cursor_pos(window, mx, my);
 			VkExtent2D ext = renderer.swapchain_extent();
 			selection.pick(static_cast<float>(mx), static_cast<float>(my),
 						   static_cast<float>(ext.width),
@@ -351,7 +351,7 @@ void App::process_input()
 						   renderer.last_proj(), sceneGraph, renderer.meshes());
 		}
 	}
-	if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE)
+	if (!platform::mouse_down(window, platform::MouseButton::Left))
 		leftClickHeld = false;
 
 	// --- Keyboard movement ---------------------------------------------------
@@ -361,30 +361,30 @@ void App::process_input()
 		if (mouseCaptured)
 		{
 			// WASD camera movement only when right-click is held
-			if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+			if (platform::key_down(window, platform::Key::W))
 				camera.position += camera.front * v;
-			if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+			if (platform::key_down(window, platform::Key::S))
 				camera.position -= camera.front * v;
-			if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+			if (platform::key_down(window, platform::Key::A))
 				camera.position -=
 					glm::normalize(glm::cross(camera.front, camera.up)) * v;
-			if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+			if (platform::key_down(window, platform::Key::D))
 				camera.position +=
 					glm::normalize(glm::cross(camera.front, camera.up)) * v;
 		}
 		else
 		{
 			// Gizmo mode shortcuts (only when camera not captured)
-			if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+			if (platform::key_down(window, platform::Key::W))
 				gizmo.operation = Gizmo::Op::Translate;
-			if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
+			if (platform::key_down(window, platform::Key::E))
 				gizmo.operation = Gizmo::Op::Rotate;
-			if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS)
+			if (platform::key_down(window, platform::Key::R))
 				gizmo.operation = Gizmo::Op::Scale;
 		}
-		if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS)
+		if (platform::key_down(window, platform::Key::Space))
 			camera.position += camera.up * v;
-		if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
+		if (platform::key_down(window, platform::Key::LeftControl))
 			camera.position -= camera.up * v;
 	}
 }
@@ -669,7 +669,7 @@ void App::init_imgui()
 	ImGui::CreateContext();
 	ImGui::StyleColorsDark();
 
-	ImGui_ImplGlfw_InitForVulkan(window, true);
+	platform::imgui_init(window);
 
 	ImGui_ImplVulkan_InitInfo initInfo{};
 	initInfo.Instance = renderer.vk_instance();
@@ -680,9 +680,10 @@ void App::init_imgui()
 	initInfo.DescriptorPool = imguiPool;
 	initInfo.MinImageCount = 2;
 	initInfo.ImageCount = renderer.swapchain_image_count();
-	initInfo.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-	initInfo.RenderPass = renderer.vk_render_pass();
-	initInfo.Subpass = 0;
+	initInfo.ApiVersion = VK_API_VERSION_1_1;
+	initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+	initInfo.PipelineInfoMain.RenderPass = renderer.vk_render_pass();
+	initInfo.PipelineInfoMain.Subpass = 0;
 
 	ImGui_ImplVulkan_Init(&initInfo);
 }
@@ -696,7 +697,7 @@ void App::cleanup()
 	save_window_config();
 
 	ImGui_ImplVulkan_Shutdown();
-	ImGui_ImplGlfw_Shutdown();
+	platform::imgui_shutdown();
 	ImGui::DestroyContext();
 	vkDestroyDescriptorPool(renderer.vk_device(), imguiPool, nullptr);
 
@@ -704,8 +705,8 @@ void App::cleanup()
 
 	renderer.cleanup();
 
-	glfwDestroyWindow(window);
-	glfwTerminate();
+	platform::destroy_window(window);
+	platform::shutdown();
 }
 
 // =============================================================================
@@ -714,7 +715,7 @@ void App::cleanup()
 
 bool App::load_window_config(int& x, int& y, int& w, int& h)
 {
-	std::ifstream f(std::string(CONFIG_DIR) + "/window.cfg");
+	std::ifstream f(platform::config_dir() + "/window.cfg");
 	if (!f) return false;
 	int fx, fy, fw, fh;
 	if (!(f >> fx >> fy >> fw >> fh)) return false;
@@ -728,12 +729,16 @@ bool App::load_window_config(int& x, int& y, int& w, int& h)
 
 void App::save_window_config()
 {
-	if (glfwGetWindowAttrib(window, GLFW_ICONIFIED)) return;
-
 	int x, y, w, h;
+#ifndef __ANDROID__
 	glfwGetWindowPos(window, &x, &y);
 	glfwGetWindowSize(window, &w, &h);
+#else
+	x = 0;
+	y = 0;
+	platform::framebuffer_size(window, w, h);
+#endif
 
-	std::ofstream f(std::string(CONFIG_DIR) + "/window.cfg");
+	std::ofstream f(platform::config_dir() + "/window.cfg");
 	if (f) f << x << ' ' << y << ' ' << w << ' ' << h << '\n';
 }

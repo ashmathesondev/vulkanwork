@@ -79,3 +79,22 @@ make build VCPKG_ROOT=E:/vcpkg  # inline override
 ```
 
 This will generate the solution if needed (or regenerate if files are missing) and launch VS. When multiple editions are installed, the script prefers Enterprise > Professional > Community.
+
+## Android
+
+Android builds use the Gradle project under `android/app` and the same top-level CMake project. Requirements:
+
+- Android SDK with platform 35
+- Android NDK
+- Gradle or Android Studio
+- `VCPKG_ROOT` set to a vcpkg checkout with Android triplet support
+- `glslc` available from a desktop Vulkan SDK, or `Vulkan_GLSLC_EXECUTABLE` set for CMake
+
+Build and install a debug APK:
+
+```powershell
+gradle :app:assembleDebug
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+The Android target builds `libvulkanwork.so` as a `NativeActivity`, stages `assets.pak` plus the default `DamagedHelmet.glb` into APK assets, then copies those files to app-internal storage on startup so existing filesystem loaders can run unchanged.

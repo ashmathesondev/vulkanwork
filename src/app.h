@@ -1,6 +1,5 @@
 #pragma once
 
-#include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
 
 #include <optional>
@@ -14,6 +13,7 @@
 #include "graphics/gaussianSplats.h"
 #include "graphics/light.h"
 #include "graphics/renderer.h"
+#include "platform/platform.h"
 
 struct App
 {
@@ -21,7 +21,7 @@ struct App
 	static constexpr int INITIAL_HEIGHT = 720;
 
 	// Window
-	GLFWwindow* window = nullptr;
+	PlatformWindow* window = nullptr;
 
 	// Renderer
 	Renderer renderer;

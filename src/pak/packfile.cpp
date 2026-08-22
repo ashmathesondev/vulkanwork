@@ -70,6 +70,10 @@ PackFile::PackFile(const std::filesystem::path& pak_path) : path_(pak_path)
 	if (header.version != VERSION)
 		throw std::runtime_error("Unsupported pack version in: " +
 								 path_.string());
+	if ((header.flags & ~FLAG_UNCOMPRESSED) != 0)
+		throw std::runtime_error("Unsupported pack flags in: " +
+								 path_.string());
+	uncompressed_ = (header.flags & FLAG_UNCOMPRESSED) != 0;
 
 	uint64_t tocSize =
 		static_cast<uint64_t>(header.entry_count) * sizeof(TocEntry);
@@ -135,6 +139,14 @@ std::vector<char> PackFile::read(std::string_view name) const
 	if (!f)
 		throw std::runtime_error("Failed to read asset data: " +
 								 std::string(name));
+
+	if (uncompressed_)
+	{
+		if (entry.compressed_size != entry.original_size)
+			throw std::runtime_error("Invalid uncompressed asset size: " +
+									 std::string(name));
+		return compressed;
+	}
 
 	std::vector<char> decompressed(entry.original_size);
 	int expectedSize = checked_lz4_size(entry.original_size, name);
