@@ -11,6 +11,7 @@ imgui.ini
 *.pdb
 *.ilk
 .gradle
-android
-android/app
-gradle
+.cxx/
+local.properties
+dist/
+**.log
