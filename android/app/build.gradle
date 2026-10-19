@@ -1,0 +1,103 @@
+plugins {
+    id "com.android.application"
+}
+
+def vwNdkVersion = "28.2.13676358"
+
+def toCMakePath = { String p -> p.replace('\\', '/') }
+
+def vcpkgRoot = System.getenv("VCPKG_ROOT")
+if (!vcpkgRoot) {
+    throw new GradleException("VCPKG_ROOT is not set. Point it at your vcpkg checkout.")
+}
+vcpkgRoot = toCMakePath(vcpkgRoot)
+
+// Same lookup order as AGP: local.properties sdk.dir, then ANDROID_HOME.
+def sdkDir = {
+    def props = new Properties()
+    def localProps = rootProject.file("local.properties")
+    if (localProps.exists()) {
+        localProps.withInputStream { props.load(it) }
+    }
+    def dir = props.getProperty("sdk.dir") ?: System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+    if (!dir) {
+        throw new GradleException("Android SDK not found. Set sdk.dir in local.properties or ANDROID_HOME.")
+    }
+    return file(dir)
+}()
+
+def ndkDir = new File(sdkDir, "ndk/${vwNdkVersion}")
+if (!new File(ndkDir, "build/cmake/android.toolchain.cmake").exists()) {
+    throw new GradleException("NDK ${vwNdkVersion} not found in ${sdkDir}. Install it with the SDK Manager.")
+}
+def ndkPath = toCMakePath(ndkDir.absolutePath)
+
+// vcpkg triplets cannot take CMake arguments, so bake the NDK path into an
+// overlay triplet. Lives outside the app build dir so `clean` keeps it.
+def tripletDir = rootProject.file("build/android-triplets")
+def tripletText = file("triplets/arm64-android.cmake.in").text.replace("@ANDROID_NDK@", ndkPath)
+def tripletFile = new File(tripletDir, "arm64-android.cmake")
+if (!tripletFile.exists() || tripletFile.text != tripletText) {
+    tripletDir.mkdirs()
+    tripletFile.text = tripletText
+}
+
+android {
+    namespace "dev.vulkanwork"
+    compileSdk 35
+    ndkVersion vwNdkVersion
+
+    defaultConfig {
+        applicationId "dev.vulkanwork"
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName "0.1.0"
+
+        externalNativeBuild {
+            cmake {
+                cppFlags "-std=c++20"
+                arguments "-DCMAKE_TOOLCHAIN_FILE=${vcpkgRoot}/scripts/buildsystems/vcpkg.cmake",
+                          "-DVCPKG_TARGET_TRIPLET=arm64-android",
+                          "-DVCPKG_OVERLAY_TRIPLETS=${toCMakePath(tripletDir.absolutePath)}",
+                          "-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${ndkPath}/build/cmake/android.toolchain.cmake",
+                          "-DANDROID_STL=c++_shared",
+                          "-DANDROID_ASSET_OUTPUT_DIR=${layout.buildDirectory.get().asFile}/generated/assets/vulkanwork"
+            }
+        }
+
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "../../CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+
+    sourceSets {
+        main {
+            manifest.srcFile "src/main/AndroidManifest.xml"
+            assets.srcDirs += "${layout.buildDirectory.get().asFile}/generated/assets/vulkanwork"
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+afterEvaluate {
+    tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach { mergeTask ->
+        def variant = mergeTask.name.substring("merge".length(), mergeTask.name.length() - "Assets".length())
+        def nativeTask = tasks.findByName("externalNativeBuild${variant}")
+        if (nativeTask != null) {
+            mergeTask.dependsOn(nativeTask)
+        }
+    }
+}

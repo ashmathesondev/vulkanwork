@@ -11,12 +11,64 @@
 
 #include "config.h"
 
+#if VW_PORTABLE
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+#endif
+
 namespace platform
 {
 namespace
 {
 void* resizeUser = nullptr;
 void (*resizeCallback)(void*) = nullptr;
+
+#if VW_PORTABLE
+std::filesystem::path executable_dir()
+{
+#if defined(_WIN32)
+	std::wstring buf(MAX_PATH, L'\0');
+	for (;;)
+	{
+		DWORD len = GetModuleFileNameW(nullptr, buf.data(),
+									   static_cast<DWORD>(buf.size()));
+		if (len == 0) break;
+		if (len < buf.size())
+		{
+			buf.resize(len);
+			return std::filesystem::path(buf).parent_path();
+		}
+		buf.resize(buf.size() * 2);
+	}
+#elif defined(__APPLE__)
+	uint32_t size = 0;
+	_NSGetExecutablePath(nullptr, &size);
+	std::string buf(size, '\0');
+	if (_NSGetExecutablePath(buf.data(), &size) == 0)
+		return std::filesystem::weakly_canonical(buf.c_str()).parent_path();
+#else
+	std::error_code ec;
+	auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+	if (!ec) return exe.parent_path();
+#endif
+	return std::filesystem::current_path();
+}
+
+const std::filesystem::path& base_dir()
+{
+	static const std::filesystem::path dir = executable_dir();
+	return dir;
+}
+#endif
 
 int to_glfw_key(Key key)
 {
@@ -138,12 +190,21 @@ void imgui_init(PlatformWindow* window)
 void imgui_new_frame() { ImGui_ImplGlfw_NewFrame(); }
 void imgui_shutdown() { ImGui_ImplGlfw_Shutdown(); }
 
+#if VW_PORTABLE
+std::string config_dir() { return base_dir().string(); }
+std::string pak_file_path() { return (base_dir() / "assets.pak").string(); }
+std::string model_path(const char* name)
+{
+	return (base_dir() / "models" / name).string();
+}
+#else
 std::string config_dir() { return CONFIG_DIR; }
 std::string pak_file_path() { return PAK_FILE; }
 std::string model_path(const char* name)
 {
 	return (std::filesystem::path(MODEL_DIR) / name).string();
 }
+#endif
 void prepare_android_assets() {}
 
 }  // namespace platform

@@ -1,9 +1,13 @@
-cmake_minimum_required(VERSION 3.20)
-project(vulkanwork LANGUAGES C CXX)
+cmake_minimum_required(VERSION 3.21)
+project(vulkanwork VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Resolve runtime assets relative to the executable instead of the build tree.
+# Enable for relocatable install/package builds.
+option(VW_PORTABLE "Load assets relative to the executable" OFF)
 
 # --- Packages ----------------------------------------------------------------
 find_package(Vulkan REQUIRED)
@@ -109,6 +113,7 @@ if(ANDROID)
     target_include_directories(vulkanwork PRIVATE
         ${ANDROID_NDK}/sources/android/native_app_glue
     )
+    target_compile_definitions(vulkanwork PRIVATE VK_USE_PLATFORM_ANDROID_KHR)
 endif()
 
 target_link_libraries(vulkanwork PRIVATE
@@ -195,3 +200,34 @@ else()
 endif()
 add_custom_target(pack_assets DEPENDS ${PAK_FILE_PATH})
 add_dependencies(vulkanwork pack_assets)
+
+# --- Install / package -------------------------------------------------------
+# Flat, relocatable layout: executable, runtime DLLs, assets.pak and the default
+# model side by side. Only meaningful with VW_PORTABLE=ON.
+if(NOT ANDROID)
+    if(NOT VW_PORTABLE)
+        message(STATUS "VW_PORTABLE is OFF: installed builds load assets "
+                       "from ${CMAKE_BINARY_DIR}")
+    endif()
+
+    install(TARGETS vulkanwork RUNTIME DESTINATION .)
+    if(WIN32)
+        install(FILES $<TARGET_RUNTIME_DLLS:vulkanwork> DESTINATION .)
+        set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION .)
+        include(InstallRequiredSystemLibraries)
+    endif()
+    install(FILES ${PAK_FILE_PATH} DESTINATION .)
+    install(FILES ${CMAKE_SOURCE_DIR}/models/DamagedHelmet.glb
+            DESTINATION models)
+
+    if(WIN32)
+        set(CPACK_GENERATOR ZIP)
+    else()
+        set(CPACK_GENERATOR TGZ)
+    endif()
+    string(TOLOWER "${CMAKE_SYSTEM_NAME}-${CMAKE_CXX_COMPILER_ID}"
+           VW_PACKAGE_SUFFIX)
+    set(CPACK_PACKAGE_FILE_NAME
+        "${PROJECT_NAME}-${PROJECT_VERSION}-${VW_PACKAGE_SUFFIX}")
+    include(CPack)
+endif()

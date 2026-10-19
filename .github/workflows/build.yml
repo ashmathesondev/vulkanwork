@@ -12,11 +12,27 @@ jobs:
       matrix:
         include:
           - os: windows-latest
+            compiler: msvc
             triplet: x64-windows
             vcpkg-root: C:\vcpkg
+            compiler-flags: ""
+          - os: windows-latest
+            compiler: clang
+            triplet: x64-windows
+            vcpkg-root: C:\vcpkg
+            compiler-flags: -T ClangCL
           - os: ubuntu-latest
+            compiler: gcc
             triplet: x64-linux
             vcpkg-root: /usr/local/share/vcpkg
+            compiler-flags: -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+          - os: ubuntu-latest
+            compiler: clang
+            triplet: x64-linux
+            vcpkg-root: /usr/local/share/vcpkg
+            compiler-flags: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+
+    name: ${{ matrix.os }} (${{ matrix.compiler }})
 
     runs-on: ${{ matrix.os }}
 
@@ -61,8 +77,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/vcpkg_installed
-          key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-${{ matrix.os }}-
+          key: vcpkg-${{ matrix.os }}-${{ matrix.compiler }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ matrix.os }}-${{ matrix.compiler }}-
 
       # ── Build ─────────────────────────────────────────────────────────
       - name: CMake configure
@@ -70,6 +86,12 @@ jobs:
           cmake -B build -S .
           -DCMAKE_TOOLCHAIN_FILE=${{ matrix.vcpkg-root }}/scripts/buildsystems/vcpkg.cmake
           -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          -DCMAKE_BUILD_TYPE=Release
+          -DVW_PORTABLE=ON
+          ${{ matrix.compiler-flags }}
 
       - name: CMake build
-        run: cmake --build build
+        run: cmake --build build --config Release
+
+      - name: Package
+        run: cpack --config build/CPackConfig.cmake -C Release -B dist

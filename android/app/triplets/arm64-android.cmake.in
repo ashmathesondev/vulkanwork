@@ -1,0 +1,10 @@
+# Template. android/app/build.gradle substitutes @ANDROID_NDK@ with the NDK
+# selected by ndkVersion and writes the result to build/android-triplets/.
+set(VCPKG_TARGET_ARCHITECTURE arm64)
+set(VCPKG_CRT_LINKAGE dynamic)
+set(VCPKG_LIBRARY_LINKAGE static)
+set(VCPKG_CMAKE_SYSTEM_NAME Android)
+set(VCPKG_CMAKE_SYSTEM_VERSION 26)
+set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "@ANDROID_NDK@/build/cmake/android.toolchain.cmake")
+set(ENV{ANDROID_NDK_HOME} "@ANDROID_NDK@")
+set(VCPKG_CMAKE_CONFIGURE_OPTIONS -DANDROID_PLATFORM=android-26 -DANDROID_ABI=arm64-v8a)

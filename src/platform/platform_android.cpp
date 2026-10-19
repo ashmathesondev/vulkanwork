@@ -1,5 +1,6 @@
 #ifdef __ANDROID__
 
+// VK_USE_PLATFORM_ANDROID_KHR comes from CMake so include order is irrelevant.
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
 #include <android/input.h>
@@ -10,7 +11,7 @@
 #include <android_native_app_glue.h>
 #include <imgui.h>
 #include <imgui_impl_android.h>
-#include <vulkan/vulkan_android.h>
+#include <vulkan/vulkan.h>
 
 #include <cstdio>
 #include <cstring>
