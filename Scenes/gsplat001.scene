@@ -1,0 +1,121 @@
+{
+  "camera": {
+    "fov": 45.0,
+    "pitch": -11.399998664855957,
+    "position": [
+      -4.046531677246094,
+      0.1711217761039734,
+      0.10507368296384811
+    ],
+    "yaw": 342.6999206542969
+  },
+  "lights": {
+    "ambient": {
+      "color": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "intensity": 0.029999999329447746
+    }
+  },
+  "modelPath": "",
+  "nodes": [
+    {
+      "children": [],
+      "localTransform": [
+        0.3199999928474426,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.3324778378009796,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.3199999928474426,
+        0.0,
+        -2.1924045085906982,
+        -0.578955352306366,
+        -0.5082805156707764,
+        1.0
+      ],
+      "meshIndex": 0,
+      "meshIndexInModel": 0,
+      "modelPath": "internal://cube",
+      "name": "Cube",
+      "parent": null
+    },
+    {
+      "children": [],
+      "light": {
+        "color": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "innerConeAngle": 0.4363323152065277,
+        "intensity": 3.0,
+        "outerConeAngle": 0.6108652353286743,
+        "radius": 10.0,
+        "type": "Directional"
+      },
+      "localTransform": [
+        -0.5144957900047302,
+        0.0,
+        0.8574929237365723,
+        0.0,
+        0.7407610416412354,
+        0.5037175416946411,
+        0.44445666670799255,
+        0.0,
+        -0.4319342076778412,
+        0.8638684153556824,
+        -0.2591605484485626,
+        0.0,
+        0.0,
+        5.0,
+        0.0,
+        1.0
+      ],
+      "meshIndex": null,
+      "meshIndexInModel": 0,
+      "modelPath": "",
+      "name": "Sun",
+      "parent": null
+    },
+    {
+      "children": [],
+      "localTransform": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "meshIndex": null,
+      "meshIndexInModel": 0,
+      "modelPath": "",
+      "name": "scene",
+      "parent": null,
+      "splat": {
+        "mode": "Gaussian",
+        "path": "E:\\work\\personal\\vulkanwork\\models\\splats\\scene.ply",
+        "pointSize": 2.0
+      }
+    }
+  ],
+  "version": 2
+}

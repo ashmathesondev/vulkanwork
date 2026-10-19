@@ -44,15 +44,15 @@ static void draw_node_tree(SceneGraph& sceneGraph, uint32_t nodeIdx,
 	if (isSelected) flags |= ImGuiTreeNodeFlags_Selected;
 	if (!hasChildren) flags |= ImGuiTreeNodeFlags_Leaf;
 
-	bool open =
-		node.light.has_value()
-			? ImGui::TreeNodeEx(
-				  reinterpret_cast<void*>(static_cast<uintptr_t>(nodeIdx)),
-				  flags, "%s  [%s light]", node.name.c_str(),
-				  light_type_name(node.light->type))
-			: ImGui::TreeNodeEx(
-				  reinterpret_cast<void*>(static_cast<uintptr_t>(nodeIdx)),
-				  flags, "%s", node.name.c_str());
+	std::string label = node.name;
+	if (node.light.has_value())
+		label +=
+			std::string("  [") + light_type_name(node.light->type) + " light]";
+	else if (node.splat.has_value())
+		label += "  [Gaussian splat]";
+	bool open = ImGui::TreeNodeEx(
+		reinterpret_cast<void*>(static_cast<uintptr_t>(nodeIdx)), flags, "%s",
+		label.c_str());
 
 	if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
 		selection.selectedNode = nodeIdx;
@@ -98,6 +98,30 @@ static void add_light(SceneGraph& sceneGraph, Selection& selection,
 	selection.selectedNode = sceneGraph.add_light_node(
 		name, light, make_light_transform(position, direction));
 	sceneGraph.update_world_transforms();
+}
+
+// Render settings of a Gaussian splat node.
+static void draw_splat_inspector(SplatComponent& splat)
+{
+	ImGui::Separator();
+	ImGui::Text("Gaussian Splat");
+	ImGui::TextWrapped("File: %s", splat.path.c_str());
+	if (splat.count > 0)
+		ImGui::Text("Splats: %u", splat.count);
+	else
+		ImGui::TextDisabled("Not loaded (see log)");
+
+	int mode = static_cast<int>(splat.mode);
+	ImGui::RadioButton("Gaussian", &mode,
+					   static_cast<int>(SplatRenderMode::Gaussian));
+	ImGui::SameLine();
+	ImGui::RadioButton("Points", &mode,
+					   static_cast<int>(SplatRenderMode::Points));
+	splat.mode = static_cast<SplatRenderMode>(mode);
+
+	if (splat.mode == SplatRenderMode::Points)
+		ImGui::SliderFloat("Point Size", &splat.pointSize, 1.0f, 16.0f,
+						   "%.1f px");
 }
 
 // Editable properties of a light node.
@@ -247,6 +271,8 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 	keep_below_menu_bar();
 
 	if (ImGui::Button("Import Mesh...")) importRequested = true;
+	ImGui::SameLine();
+	if (ImGui::Button("Import Splat...")) importSplatRequested = true;
 
 	if (selection.selectedNode.has_value())
 	{
@@ -331,6 +357,16 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 						glm::value_ptr(node.localTransform));
 				}
 				draw_light_inspector(*node.light);
+			}
+			else if (node.splat.has_value())
+			{
+				ImGui::Text("Position: %.2f, %.2f, %.2f", matrixTranslation[0],
+							matrixTranslation[1], matrixTranslation[2]);
+				ImGui::Text("Rotation: %.1f, %.1f, %.1f", matrixRotation[0],
+							matrixRotation[1], matrixRotation[2]);
+				ImGui::Text("Scale:    %.2f, %.2f, %.2f", matrixScale[0],
+							matrixScale[1], matrixScale[2]);
+				draw_splat_inspector(*node.splat);
 			}
 			else
 			{

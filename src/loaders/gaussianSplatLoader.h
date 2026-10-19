@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <glm/glm.hpp>
 #include <string>
 #include <vector>
@@ -21,6 +22,13 @@ struct RawSplat
 						 // Total: 240 bytes
 };
 static_assert(sizeof(RawSplat) == 240, "RawSplat must be 240 bytes");
+
+// How a splat cloud is drawn.
+enum class SplatRenderMode : uint32_t
+{
+	Gaussian = 0,  // anisotropic, alpha-blended 2D Gaussians (3DGS)
+	Points = 1,	   // opaque fixed-size discs at each splat centre
+};
 
 struct GaussianSplatCloud
 {

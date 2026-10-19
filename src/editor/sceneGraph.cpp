@@ -4,6 +4,14 @@
 #include <cmath>
 #include <functional>
 
+glm::mat4 colmap_to_y_up()
+{
+	glm::mat4 m{1.0f};
+	m[1][1] = -1.0f;
+	m[2][2] = -1.0f;
+	return m;
+}
+
 const char* light_type_name(LightType type)
 {
 	switch (type)

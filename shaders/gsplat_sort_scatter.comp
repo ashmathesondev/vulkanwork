@@ -5,7 +5,8 @@
 // =============================================================================
 // Each workgroup processes the same chunk it handled in the histogram pass.
 // For each element, computes its global output position using the prefix table
-// and scatters keys+values to the output (ping) buffer.
+// and scatters keys+values to the output (ping) buffer. The scatter is stable
+// (see main), which LSD radix sort requires.
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
@@ -32,6 +33,16 @@ layout(push_constant) uniform PC {
     uint numWG;
 } push;
 
+// LSD radix sort is only correct if every pass is STABLE: elements with the
+// same digit must keep their relative order from the previous pass. Racing
+// threads on atomicAdd would scramble that order, so each 256-element tile
+// ranks its elements deterministically in shared memory instead.
+shared uint sDigit[256];      // digit of each element in the current tile
+shared uint sOffset[256];     // next output slot per digit for this workgroup
+shared uint sTileCount[256];  // per-digit element count in the current tile
+
+const uint INVALID_DIGIT = 0xFFFFFFFFu;
+
 void main()
 {
     uint lid   = gl_LocalInvocationID.x;
@@ -43,24 +54,46 @@ void main()
     uint start     = wgID * chunkSize;
     uint end       = min(start + chunkSize, N);
 
-    // Process elements sequentially per thread stripe to preserve relative order
-    // within each digit bucket (stability).
-    for (uint i = start + lid; i < end; i += 256u) {
-        uint key = (push.ping == 0u) ? keysA[i] : keysB[i];
-        uint val = (push.ping == 0u) ? valsA[i] : valsB[i];
+    // Thread `lid` doubles as the owner of digit `lid` for bookkeeping.
+    sOffset[lid]    = prefix[lid * numWG + wgID];
+    sTileCount[lid] = 0u;
+    barrier();
 
-        uint digit      = (key >> push.shift) & 0xFFu;
-        // Claim the next output slot for this digit in this workgroup.
-        // prefix[digit * numWG + wgID] starts at the exclusive prefix for this
-        // (digit, workgroup) pair and is incremented atomically to track scatter.
-        uint outPos = atomicAdd(prefix[digit * numWG + wgID], 1u);
+    for (uint tileStart = start; tileStart < end; tileStart += 256u) {
+        uint i     = tileStart + lid;
+        bool valid = i < end;
 
-        if (push.ping == 0u) {
-            keysB[outPos] = key;
-            valsB[outPos] = val;
-        } else {
-            keysA[outPos] = key;
-            valsA[outPos] = val;
+        uint key = 0u, val = 0u, digit = INVALID_DIGIT;
+        if (valid) {
+            key   = (push.ping == 0u) ? keysA[i] : keysB[i];
+            val   = (push.ping == 0u) ? valsA[i] : valsB[i];
+            digit = (key >> push.shift) & 0xFFu;
         }
+        sDigit[lid] = digit;
+        barrier();
+
+        if (valid) {
+            // Rank = number of earlier elements in this tile with the same
+            // digit. Deterministic, so the scatter preserves input order.
+            uint rank = 0u;
+            for (uint j = 0u; j < lid; ++j)
+                rank += (sDigit[j] == digit) ? 1u : 0u;
+
+            uint outPos = sOffset[digit] + rank;
+            if (push.ping == 0u) {
+                keysB[outPos] = key;
+                valsB[outPos] = val;
+            } else {
+                keysA[outPos] = key;
+                valsA[outPos] = val;
+            }
+            atomicAdd(sTileCount[digit], 1u);  // order-independent count
+        }
+        barrier();
+
+        // Advance each digit's base past this tile's elements.
+        sOffset[lid]   += sTileCount[lid];
+        sTileCount[lid] = 0u;
+        barrier();
     }
 }

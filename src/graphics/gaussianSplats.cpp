@@ -27,7 +27,10 @@
 struct PreprocessPC
 {
 	uint32_t N;
+	uint32_t _pad[3];
+	glm::mat4 model;  // offset 16, std430 column-major
 };
+static_assert(sizeof(PreprocessPC) == 80, "PreprocessPC must match shader");
 struct SortPC
 {
 	uint32_t N;
@@ -40,6 +43,8 @@ struct RenderPC
 	uint32_t N;
 	float screenW;
 	float screenH;
+	uint32_t mode;	  // SplatRenderMode
+	float pointSize;  // pixels, points mode
 };
 
 static constexpr uint32_t SORT_WG_SIZE = 256;  // threads per workgroup
@@ -192,13 +197,14 @@ void GaussianSplatSystem::create_render_descriptor_layout()
 void GaussianSplatSystem::create_compute_pipelines(pak::PackFile& pack)
 {
 	// Pipeline layout: set 0 = frameSetLayout_, set 1 = computeSetLayout_
-	// Push constants: 16 bytes (SortPC is the largest)
+	// Push constants: PreprocessPC is the largest; the sort passes read only
+	// its first 16 bytes (SortPC).
 	VkDescriptorSetLayout setLayouts[] = {frameSetLayout_, computeSetLayout_};
 
 	VkPushConstantRange pcRange{};
 	pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 	pcRange.offset = 0;
-	pcRange.size = sizeof(SortPC);	// 16 bytes, largest
+	pcRange.size = sizeof(PreprocessPC);
 
 	VkPipelineLayoutCreateInfo li{
 		VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -480,6 +486,18 @@ void GaussianSplatSystem::destroy_scene_buffers()
 	numSortWG_ = 0;
 }
 
+void GaussianSplatSystem::clear()
+{
+	if (!device_) return;
+	vkDeviceWaitIdle(device_);
+	destroy_scene_buffers();
+	if (descriptorPool_)
+	{
+		vkResetDescriptorPool(device_, descriptorPool_, 0);
+		create_descriptor_sets();
+	}
+}
+
 void GaussianSplatSystem::load(const GaussianSplatCloud& cloud)
 {
 	vkDeviceWaitIdle(device_);
@@ -563,10 +581,21 @@ void GaussianSplatSystem::dispatch_compute(VkCommandBuffer cmd,
 							 nullptr, 0, nullptr);
 	};
 
+	// ---- 0. WAR: the previous frame's draw may still be reading the
+	// preprocess/sort buffers this frame is about to overwrite (they are
+	// shared across frames in flight).
+	vkCmdPipelineBarrier(cmd,
+						 VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+							 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+						 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
+						 nullptr, 0, nullptr);
+
 	// ---- 1. Preprocess: project splats, eval SH, write depth sort keys ----
 	{
 		bind_compute(preprocessPipeline_);
-		PreprocessPC pc{N};
+		PreprocessPC pc{};
+		pc.N = N;
+		pc.model = model_;
 		vkCmdPushConstants(cmd, computePipeLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
 						   0, sizeof(pc), &pc);
 		vkCmdDispatch(cmd, numWG, 1, 1);
@@ -636,26 +665,14 @@ void GaussianSplatSystem::record_draw(VkCommandBuffer cmd,
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
 							renderPipeLayout_, 0, 1, &renderDS_, 0, nullptr);
 
-	// Push constants: N (vertex count = N * 6 triangles, N in PC)
-	// Screen size is read from the viewport dynamic state via gl_FragCoord in
-	// the fragment shader; the vertex shader uses push constants for
-	// pixel->NDC. We embed screenW/H from the last-known extent in
-	// dispatch_compute; for now pass through the render push constants.  The
-	// vertex shader reads these. Note: we store the extent in dispatch_compute
-	// but don't cache it here, so we use a simple approach: the vertex shader
-	// re-derives pixel coords from NDC and reconstructs the required
-	// transforms. Actual screen size is passed as push constant populated
-	// below. (We forward the last extent stored in the system — see
-	// dispatch_compute.)
-
-	RenderPC pc{splatCount_, 0.f, 0.f};
-	// screenW/H are 0 here; shaders use gl_FragCoord which is already in
-	// pixels, and the vertex shader computes NDC from the stored pixel center +
-	// viewport push constants. We cache them during dispatch_compute below. For
-	// simplicity, the vertex shader gets screen size from the push constant.
-	// Re-run dispatch_compute first sets them; they are cached in lastExtent_.
+	// Screen size (cached in dispatch_compute) converts pixels -> NDC in the
+	// vertex shader.
+	RenderPC pc{};
+	pc.N = splatCount_;
 	pc.screenW = lastExtentW_;
 	pc.screenH = lastExtentH_;
+	pc.mode = static_cast<uint32_t>(renderMode_);
+	pc.pointSize = pointSize_;
 
 	vkCmdPushConstants(cmd, renderPipeLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0,
 					   sizeof(pc), &pc);

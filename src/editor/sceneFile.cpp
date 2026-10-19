@@ -115,6 +115,16 @@ bool save_scene_file(const std::string& path, const SceneFileData& data)
 		n["parent"] =
 			node.parent.has_value() ? json(node.parent.value()) : json(nullptr);
 		if (node.light.has_value()) n["light"] = light_to_json(*node.light);
+		if (node.splat.has_value())
+		{
+			n["splat"] = {
+				{"path", node.splat->path},
+				{"mode", node.splat->mode == SplatRenderMode::Points
+							 ? "Points"
+							 : "Gaussian"},
+				{"pointSize", node.splat->pointSize},
+			};
+		}
 
 		json children = json::array();
 		for (uint32_t c : node.children) children.push_back(c);
@@ -268,6 +278,24 @@ bool load_scene_file(const std::string& path, SceneFileData& data)
 
 			if (n.contains("parent") && !n["parent"].is_null())
 				node.parent = n["parent"].get<uint32_t>();
+
+			if (n.contains("splat"))
+			{
+				const auto& sj = n["splat"];
+				SplatComponent splat;
+				splat.path = sj.value("path", std::string{});
+				splat.mode = sj.value("mode", std::string{}) == "Points"
+								 ? SplatRenderMode::Points
+								 : SplatRenderMode::Gaussian;
+				splat.pointSize = sj.value("pointSize", 2.0f);
+				if (!splat.path.empty())
+					node.splat = splat;
+				else
+					LOG_WARN(
+						"load_scene_file: node '%s' has a splat without a "
+						"path",
+						node.name.c_str());
+			}
 
 			if (n.contains("light"))
 			{

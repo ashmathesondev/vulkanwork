@@ -81,7 +81,9 @@ struct App
 
 	// Gaussian Splat system
 	std::optional<GaussianSplatSystem> splatSystem_;
-	void do_load_splat(const std::string& path);
+	void do_import_splat(const std::string& path);
+	bool upload_splat_cloud(SplatComponent& splat);
+	void sync_splats();
 
 	// Scene file operations
 	bool showLoadDialog_ = false;
@@ -92,4 +94,5 @@ struct App
 	void do_load_scene(const std::string& path);
 	void do_import_mesh(const std::string& path);
 	void do_delete_selected();
+	void delete_node(uint32_t nodeIdx);
 };

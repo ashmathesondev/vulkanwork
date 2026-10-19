@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "logger.h"
 #include "plyLoader.h"
 
 // =============================================================================
@@ -29,8 +30,7 @@ GaussianSplatCloud load_gaussian_splat_ply(const std::string& path)
 	PlyReader r;
 	if (!r.open(path))
 	{
-		std::fprintf(stderr, "[GaussianSplatLoader] Failed to open: %s\n",
-					 path.c_str());
+		LOG_ERROR("GaussianSplatLoader: failed to open '%s'", path.c_str());
 		return cloud;
 	}
 
@@ -78,9 +78,8 @@ GaussianSplatCloud load_gaussian_splat_ply(const std::string& path)
 		(off_x != SIZE_MAX && off_y != SIZE_MAX && off_z != SIZE_MAX);
 	if (!hasPosition)
 	{
-		std::fprintf(stderr,
-					 "[GaussianSplatLoader] Missing position fields in %s\n",
-					 path.c_str());
+		LOG_ERROR("GaussianSplatLoader: missing x/y/z properties in '%s'",
+				  path.c_str());
 		return cloud;
 	}
 
@@ -126,7 +125,13 @@ GaussianSplatCloud load_gaussian_splat_ply(const std::string& path)
 			s.sh[3 + k] = read_float(row, off_rest[k], 4);
 	}
 
-	std::fprintf(stdout, "[GaussianSplatLoader] Loaded %u splats from %s\n", N,
-				 path.c_str());
+	if (off_opacity == SIZE_MAX || off_scale[0] == SIZE_MAX ||
+		off_rot[0] == SIZE_MAX || off_dc[0] == SIZE_MAX)
+		LOG_WARN(
+			"GaussianSplatLoader: '%s' lacks 3DGS properties (opacity/scale/"
+			"rot/f_dc); use Points mode to view it as a point cloud",
+			path.c_str());
+	LOG_INFO("GaussianSplatLoader: loaded %u splats from '%s'", N,
+			 path.c_str());
 	return cloud;
 }

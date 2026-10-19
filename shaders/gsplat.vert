@@ -9,8 +9,11 @@
 //
 // Reads the sorted splat index from sortVals (binding 1), then reads the
 // preprocessed 2D Gaussian data from preprocessBuffer (binding 0).
-// Computes the oriented bounding quad via eigendecomposition of cov2d and
-// outputs the corner in NDC along with per-fragment data.
+//
+// mode 0 (Gaussian): oriented quad from the eigendecomposition of cov2d,
+//                    covering 3 sigma.
+// mode 1 (Points):   fixed-size screen-aligned quad (pointSize pixels) at the
+//                    splat centre, drawn as an opaque disc.
 
 // ---- Descriptor set 0: render data ----------------------------------------
 layout(std430, set = 0, binding = 0) readonly buffer PreprocessBuffer {
@@ -24,6 +27,8 @@ layout(push_constant) uniform PC {
     uint  N;
     float screenW;
     float screenH;
+    uint  mode;       // 0 = Gaussian splats, 1 = points
+    float pointSize;  // points mode: diameter in pixels
 } push;
 
 // ---- Outputs to fragment shader -------------------------------------------
@@ -31,6 +36,8 @@ layout(location = 0) out vec2  fragCenter;    // screen-space center (pixels)
 layout(location = 1) out vec3  fragCov2dInv;  // inverse cov2d: [a_inv, b_inv, c_inv]
 layout(location = 2) out vec3  fragColor;
 layout(location = 3) out float fragAlpha;
+layout(location = 4) flat out uint fragMode;
+layout(location = 5) out float fragPointRadius;
 
 // ---- quad corner offsets (unit square, 2 triangles) -----------------------
 const vec2 CORNERS[6] = vec2[6](
@@ -41,6 +48,10 @@ const vec2 CORNERS[6] = vec2[6](
     vec2( 1.0,  1.0),
     vec2(-1.0,  1.0)
 );
+
+// Largest quad half-extent in pixels. Guards against near-degenerate splats
+// close to the camera producing screen-filling quads.
+const float MAX_RADIUS_PX = 1024.0;
 
 // ---- Eigendecomposition of symmetric 2x2 [a,b;b,c] -----------------------
 // Returns (lambda1, lambda2) and sets v1 to the first eigenvector (unit).
@@ -70,19 +81,37 @@ void invert2x2(float a, float b, float c,
     ci =  a * invDet;
 }
 
+void emit_culled()
+{
+    // Outside the clip volume (z > w): the primitive is discarded.
+    gl_Position     = vec4(0.0, 0.0, 2.0, 1.0);
+    fragCenter      = vec2(0.0);
+    fragCov2dInv    = vec3(0.0);
+    fragColor       = vec3(0.0);
+    fragAlpha       = 0.0;
+    fragMode        = push.mode;
+    fragPointRadius = 0.0;
+}
+
 void main()
 {
     uint splatIdx = uint(gl_VertexIndex) / 6u;
     uint corner   = uint(gl_VertexIndex) % 6u;
 
     if (splatIdx >= push.N) {
-        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+        emit_culled();
         return;
     }
 
     // Look up sorted splat index
     uint si  = sortedIndices[splatIdx];
     uint b   = si * 10u;
+
+    float alpha = prepData[b + 8u];
+    if (alpha <= 0.0) {  // culled in preprocess
+        emit_culled();
+        return;
+    }
 
     float cx    = prepData[b + 0u];  // center x (pixels)
     float cy    = prepData[b + 1u];  // center y (pixels)
@@ -92,37 +121,40 @@ void main()
     float red   = prepData[b + 5u];
     float grn   = prepData[b + 6u];
     float blu   = prepData[b + 7u];
-    float alpha = prepData[b + 8u];
     float depth = prepData[b + 9u];
 
-    // Eigendecomposition -> quad half-axes in pixels
-    float l1, l2;
-    vec2  v1;
-    eigen2x2(covA, covB, covC, l1, l2, v1);
-    vec2 v2 = vec2(-v1.y, v1.x);
+    vec2 offset = CORNERS[corner];
+    vec2 screenPos;
+    float pointRadius = 0.0;
 
-    float r1 = 3.0 * sqrt(max(0.0, l1));
-    float r2 = 3.0 * sqrt(max(0.0, l2));
+    if (push.mode == 1u) {
+        pointRadius = max(push.pointSize, 1.0) * 0.5;
+        screenPos = vec2(cx, cy) + offset * pointRadius;
+    } else {
+        // Eigendecomposition -> quad half-axes in pixels
+        float l1, l2;
+        vec2  v1;
+        eigen2x2(covA, covB, covC, l1, l2, v1);
+        vec2 v2 = vec2(-v1.y, v1.x);
 
-    // Screen-space position of this corner (pixels)
-    vec2 offset     = CORNERS[corner];
-    vec2 screenPos  = vec2(cx, cy)
-                    + offset.x * r1 * v1
-                    + offset.y * r2 * v2;
+        float r1 = min(3.0 * sqrt(max(0.0, l1)), MAX_RADIUS_PX);
+        float r2 = min(3.0 * sqrt(max(0.0, l2)), MAX_RADIUS_PX);
 
-    // Convert pixels -> NDC (Vulkan: y points down)
-    vec2 ndc = vec2(
-         screenPos.x / push.screenW * 2.0 - 1.0,
-        -(screenPos.y / push.screenH * 2.0 - 1.0)
-    );
+        screenPos = vec2(cx, cy) + offset.x * r1 * v1 + offset.y * r2 * v2;
+    }
+
+    // Pixels -> NDC. Vulkan NDC y points down, like pixel y.
+    vec2 ndc = screenPos / vec2(push.screenW, push.screenH) * 2.0 - 1.0;
     gl_Position = vec4(ndc, depth, 1.0);
 
     // Inverse 2D covariance for Gaussian evaluation in fragment shader
     float ai, bi, ci;
     invert2x2(covA, covB, covC, ai, bi, ci);
 
-    fragCenter   = vec2(cx, cy);
-    fragCov2dInv = vec3(ai, bi, ci);
-    fragColor    = vec3(red, grn, blu);
-    fragAlpha    = alpha;
+    fragCenter      = vec2(cx, cy);
+    fragCov2dInv    = vec3(ai, bi, ci);
+    fragColor       = vec3(red, grn, blu);
+    fragAlpha       = alpha;
+    fragMode        = push.mode;
+    fragPointRadius = pointRadius;
 }

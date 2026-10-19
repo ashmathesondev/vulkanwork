@@ -178,7 +178,11 @@ void App::main_loop()
 		if (showSplatImportDialog_)
 		{
 			IGFD::FileDialogConfig config;
-			config.path = ".";
+			std::error_code ec;
+			config.path = std::filesystem::is_directory("models/splats", ec)
+							  ? "models/splats"
+							  : ".";
+			config.flags = ImGuiFileDialogFlags_Modal;
 			ImGuiFileDialog::Instance()->OpenDialog(
 				"ImportSplat", "Import Gaussian Splat", ".ply", config);
 			showSplatImportDialog_ = false;
@@ -211,7 +215,7 @@ void App::main_loop()
 				"ImportSplat", ImGuiWindowFlags_NoCollapse, dialogMinSize))
 		{
 			if (ImGuiFileDialog::Instance()->IsOk())
-				do_load_splat(ImGuiFileDialog::Instance()->GetFilePathName());
+				do_import_splat(ImGuiFileDialog::Instance()->GetFilePathName());
 			ImGuiFileDialog::Instance()->Close();
 		}
 
@@ -224,6 +228,11 @@ void App::main_loop()
 		{
 			debugWindow.importRequested = false;
 			showImportDialog_ = true;
+		}
+		if (debugWindow.importSplatRequested)
+		{
+			debugWindow.importSplatRequested = false;
+			showSplatImportDialog_ = true;
 		}
 		if (debugWindow.deleteRequested)
 		{
@@ -264,6 +273,7 @@ void App::main_loop()
 				node.meshIndex.value() < meshes.size())
 				meshes[node.meshIndex.value()].transform = node.worldTransform;
 		}
+		sync_splats();
 
 		ImGui::Render();
 
@@ -457,6 +467,7 @@ void App::new_scene()
 	build_scene_graph();
 	camera = Camera{};
 	add_default_lights();
+	if (splatSystem_) splatSystem_->clear();
 	selection.selectedNode.reset();
 	currentScenePath.clear();
 	modelPath.clear();
@@ -553,6 +564,21 @@ void App::do_load_scene(const std::string& path)
 	lights = data.lights;
 	modelPath = data.modelPath;
 
+	// Gaussian splats: one cloud can be resident at a time.
+	splatSystem_->clear();
+	bool splatLoaded = false;
+	for (auto& node : sceneGraph.nodes)
+	{
+		if (!node.splat.has_value()) continue;
+		if (splatLoaded)
+		{
+			LOG_WARN("Only one Gaussian splat cloud is supported; '%s' ignored",
+					 node.splat->path.c_str());
+			continue;
+		}
+		splatLoaded = upload_splat_cloud(*node.splat);
+	}
+
 	// Sync scene graph → mesh transforms and lights
 	sceneGraph.update_world_transforms();
 	sceneGraph.collect_lights(lights);
@@ -606,24 +632,92 @@ void App::do_import_mesh(const std::string& path)
 	sceneGraph.update_world_transforms();
 }
 
-void App::do_load_splat(const std::string& path)
+bool App::upload_splat_cloud(SplatComponent& splat)
 {
-	LOG_INFO("Loading Gaussian Splat: %s", path.c_str());
-	GaussianSplatCloud cloud = load_gaussian_splat_ply(path);
+	LOG_INFO("Loading Gaussian Splat: %s", splat.path.c_str());
+	splat.count = 0;
+	GaussianSplatCloud cloud = load_gaussian_splat_ply(splat.path);
 	if (cloud.splats.empty())
 	{
-		LOG_WARN("Gaussian Splat load failed or empty: %s", path.c_str());
+		LOG_WARN("Gaussian Splat load failed or empty: %s", splat.path.c_str());
+		return false;
+	}
+	LOG_INFO("Loaded %zu splats, uploading to GPU...", cloud.splats.size());
+	splatSystem_->load(cloud);
+	splat.count = splatSystem_->splat_count();
+	LOG_INFO("Gaussian Splat upload complete.");
+	return true;
+}
+
+void App::do_import_splat(const std::string& path)
+{
+	SplatComponent splat;
+	splat.path = path;
+	if (!upload_splat_cloud(splat)) return;
+
+	// The GPU now holds the new cloud. Drop splat links from older nodes and
+	// delete those nodes when nothing else hangs off them.
+	for (bool removed = true; removed;)
+	{
+		removed = false;
+		for (uint32_t i = 0; i < static_cast<uint32_t>(sceneGraph.nodes.size());
+			 ++i)
+		{
+			auto& node = sceneGraph.nodes[i];
+			if (!node.splat.has_value()) continue;
+			node.splat.reset();
+			if (node.children.empty() && !node.meshIndex.has_value() &&
+				!node.light.has_value())
+			{
+				delete_node(i);
+				removed = true;
+				break;	// indices shifted; rescan
+			}
+		}
+	}
+
+	std::string name = std::filesystem::path(path).stem().string();
+	uint32_t idx = sceneGraph.add_node(name, colmap_to_y_up(), std::nullopt, {},
+									   0, std::nullopt);
+	sceneGraph.nodes[idx].splat = splat;
+	sceneGraph.update_world_transforms();
+	selection.selectedNode = idx;
+}
+
+void App::sync_splats()
+{
+	if (!splatSystem_) return;
+
+	const SceneNode* active = nullptr;
+	for (const auto& node : sceneGraph.nodes)
+	{
+		if (node.splat.has_value() && node.splat->count > 0)
+		{
+			active = &node;
+			break;
+		}
+	}
+
+	if (!active)
+	{
+		// The splat node was deleted: free the GPU cloud.
+		if (splatSystem_->has_splats()) splatSystem_->clear();
 		return;
 	}
-	LOG_INFO("Loaded %zu splats — uploading to GPU...", cloud.splats.size());
-	splatSystem_->load(cloud);
-	LOG_INFO("Gaussian Splat upload complete.");
+
+	splatSystem_->set_transform(active->worldTransform);
+	splatSystem_->set_render_mode(active->splat->mode,
+								  active->splat->pointSize);
 }
 
 void App::do_delete_selected()
 {
 	if (!selection.selectedNode.has_value()) return;
-	uint32_t nodeIdx = selection.selectedNode.value();
+	delete_node(selection.selectedNode.value());
+}
+
+void App::delete_node(uint32_t nodeIdx)
+{
 	if (nodeIdx >= sceneGraph.nodes.size()) return;
 
 	auto meshIdx = sceneGraph.nodes[nodeIdx].meshIndex;

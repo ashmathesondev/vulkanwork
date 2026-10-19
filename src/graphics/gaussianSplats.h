@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <glm/glm.hpp>
 #include <vector>
 
 #include "loaders/gaussianSplatLoader.h"
@@ -33,7 +34,21 @@ class GaussianSplatSystem
 	// May be called multiple times to load a different scene.
 	void load(const GaussianSplatCloud& cloud);
 
+	// Release the current cloud's GPU buffers (no splats drawn afterwards).
+	void clear();
+
 	bool has_splats() const { return splatCount_ > 0; }
+	uint32_t splat_count() const { return splatCount_; }
+
+	// Object-to-world transform applied to the whole cloud.
+	void set_transform(const glm::mat4& model) { model_ = model; }
+
+	// Gaussian = alpha-blended splats, Points = opaque discs of pointSize px.
+	void set_render_mode(SplatRenderMode mode, float pointSize)
+	{
+		renderMode_ = mode;
+		pointSize_ = pointSize;
+	}
 
 	// Called from Renderer::begin_frame() BEFORE vkCmdBeginRenderPass.
 	// Dispatches preprocess + radix-sort compute.
@@ -59,6 +74,11 @@ class GaussianSplatSystem
 	VkRenderPass renderPass_ = VK_NULL_HANDLE;
 	VkDescriptorSetLayout frameSetLayout_ = VK_NULL_HANDLE;
 	uint32_t framesInFlight_ = 0;
+
+	// ---- Per-cloud render state ---------------------------------------------
+	glm::mat4 model_{1.0f};
+	SplatRenderMode renderMode_ = SplatRenderMode::Gaussian;
+	float pointSize_ = 2.0f;
 
 	// ---- Splat counts -------------------------------------------------------
 	uint32_t splatCount_ = 0;
