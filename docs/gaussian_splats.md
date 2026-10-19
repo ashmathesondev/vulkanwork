@@ -135,23 +135,32 @@ R  = rotation_matrix(quaternion)
 Σ₃D = R · S² · Rᵀ                  (symmetric positive-definite 3×3)
 ```
 
-### Step 2: Jacobian of the perspective projection
+### Step 2: Jacobian of the perspective projection (in pixels)
 
-At view-space position **t** = (t_x, t_y, t_z) — where t_z < 0 for objects in front of
-the camera — the local linear approximation of the perspective map is:
+At view-space position **t** = (t_x, t_y, t_z), where t_z < 0 for objects in front of
+the camera, the pixel coordinates are `u = c_x − f_x·t_x/t_z` and
+`v = c_y + f_y·t_y/t_z` (pixel y points down, like `gl_FragCoord`). The focal lengths
+in pixels come from the projection matrix: `f_x = P[0][0]·W/2`, `f_y = |P[1][1]|·H/2`.
+The local linear approximation is:
 
 ```
-J = ⎡ 1/t_z    0      −t_x / t_z² ⎤
-    ⎢  0      1/t_z   −t_y / t_z² ⎥
-    ⎣  0       0         0         ⎦
+J = ⎡ −f_x/t_z     0        f_x·t_x/t_z² ⎤
+    ⎢   0        f_y/t_z   −f_y·t_y/t_z² ⎥
+    ⎣   0          0           0          ⎦
 ```
 
-The third row is all zeros because we only care about the x,y screen projection; the
-resulting product naturally reduces to a 2×2 result when we take the upper-left block.
+The focal lengths matter: without them the covariance is in normalized camera units, the
+0.3 px² low-pass term dominates, and every splat collapses to a dot. The third row is
+zero because only the x,y projection is needed.
+
+**GLSL is column-major.** `mat3(a,b,c, d,e,f, g,h,i)` fills *columns*, so a matrix
+typed out row by row is silently transposed. Both `quat_to_rotation` and `J` in
+`gsplat_preprocess.comp` are written column by column for this reason.
 
 ### Step 3: Project to screen-space covariance
 
-Let W be the upper-left 3×3 of the view matrix (the rotation part only):
+Let W be the upper-left 3×3 of `view · model` (the cloud's own transform is applied
+here too):
 
 ```
 T    = J · W                        (3×3)
@@ -278,9 +287,18 @@ Pass k (shift = k × 8 bits):
                                    + elements with digit d in WGs 0..w-1.
 
   Dispatch 3 — Scatter (gsplat_sort_scatter.comp)
-    Each element reads its digit, atomically increments
-    prefix[digit * numWG + wgID], and writes to that output slot.
+    Each element is placed at prefix[digit * numWG + wgID] plus its rank
+    among same-digit elements that come before it in the chunk.
 ```
+
+### Stability is mandatory
+
+An LSD radix sort is only correct if every pass is **stable**: elements with equal
+digits must keep the order produced by the previous pass. Letting 256 threads race on
+`atomicAdd` to claim output slots is *not* stable, and it silently scrambles the depth
+order. The scatter pass instead loads each 256-element tile into shared memory and
+ranks every element by counting same-digit elements with a lower local index. The
+result is deterministic and order-preserving.
 
 4 passes × 3 dispatches = **12 compute dispatches** per frame, each separated by a
 memory barrier.
@@ -357,7 +375,7 @@ float power = -0.5 * (a*d.x*d.x + 2.0*b*d.x*d.y + c*d.y*d.y);
 if (power > 0.0) discard;                  // degenerate / outside ellipse
 
 float g            = exp(power);           // ∈ (0, 1]
-float finalAlpha   = fragAlpha * g;        // splat opacity × Gaussian weight
+float finalAlpha   = min(0.99, fragAlpha * g);  // clamp like the reference rasterizer
 if (finalAlpha < 1.0/255.0) discard;       // cull invisible fragments
 
 outColor = vec4(fragColor, finalAlpha);    // non-premultiplied; blending does the rest
@@ -384,7 +402,9 @@ unit multiplies by `finalAlpha` automatically via `SRC_ALPHA`.
 | Vertex shader | `shaders/gsplat.vert` | Quad corners via eigendecomposition of Σ₂D |
 | Fragment shader | `shaders/gsplat.frag` | Gaussian falloff, alpha blend output |
 | Renderer integration | `src/graphics/renderer.h/.cpp` | Calls dispatch_compute + record_draw |
-| UI | `src/app.h/.cpp` | "Import Gaussian Splat (.ply)..." menu item |
+| Scene integration | `src/editor/sceneGraph.h`, `src/app.cpp` | `SplatComponent` on a scene node: transform, render mode, save/load |
+| UI | `src/editor/debugWindow.cpp`, `src/app.cpp` | File menu item, Scene Hierarchy "Import Splat..." button, inspector |
+| Samples | `models/splats/`, `tools/splatgen/` | Synthetic test scenes + one real capture (see its README) |
 | Lesson plan | `docs/gaussian_splats.md` | This document |
 
 ### GPU buffer summary
@@ -455,3 +475,28 @@ begin_frame()
 - **Shader pack key naming.** All six new shaders are compiled with `glslc` and packed into
   `assets.pak` under keys `shaders/gsplat_*.spv`. `GaussianSplatSystem::init()` receives
   a `pak::PackFile&` reference and loads them on first call.
+
+---
+
+## 10. Editor Integration
+
+- **Scene node.** An imported cloud becomes a scene graph node carrying a
+  `SplatComponent` (source path, render mode, point size). Its world transform is pushed
+  to the preprocess shader as `model`, so the gizmo can move, rotate and scale the cloud.
+  It is saved in `.scene` files like any other node. One cloud is GPU-resident at a time:
+  importing another replaces it, and deleting the node frees the GPU buffers.
+- **COLMAP orientation.** Real captures use the COLMAP convention (Y down, Z forward).
+  Imports therefore start with a 180° rotation about X (`colmap_to_y_up()`).
+- **Render modes.** *Gaussian* draws the anisotropic, alpha-blended splats.
+  *Points* reuses the same preprocess and sort but draws an opaque disc of `pointSize`
+  pixels at each splat centre. That is useful to inspect the raw point distribution and
+  floaters, and it works for plain point-cloud PLYs too.
+- **Colour space.** Splat colours were optimized against sRGB photos, but the swapchain is
+  sRGB and encodes on write. The preprocess pass converts SH output to linear first,
+  otherwise colours come out washed out.
+- **Culling.** Splats behind/too close to the camera, outside a 1.3× NDC margin, or with
+  alpha < 1/255 get alpha 0. The vertex shader then emits a clipped primitive instead of a
+  quad with stale covariance.
+- **Frames in flight.** The preprocess/sort buffers are shared by both frames in flight.
+  `dispatch_compute` starts with a vertex/fragment → compute barrier, so the next frame
+  cannot overwrite data the previous frame's draw is still reading.

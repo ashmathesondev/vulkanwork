@@ -22,6 +22,8 @@ enum class LightType : uint32_t
 
 struct DirectionalLight
 {
+	// Editor anchor for the gizmo and debug arrow; does not affect shading.
+	glm::vec3 position{0.0f, 5.0f, 0.0f};
 	glm::vec3 direction{0.0f, -1.0f, 0.0f};
 	glm::vec3 color{1.0f};
 	float intensity = 1.0f;

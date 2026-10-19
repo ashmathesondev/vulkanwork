@@ -1,7 +1,50 @@
 #include "sceneGraph.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
+
+glm::mat4 colmap_to_y_up()
+{
+	glm::mat4 m{1.0f};
+	m[1][1] = -1.0f;
+	m[2][2] = -1.0f;
+	return m;
+}
+
+const char* light_type_name(LightType type)
+{
+	switch (type)
+	{
+		case LightType::Directional:
+			return "Directional";
+		case LightType::Point:
+			return "Point";
+		case LightType::Spot:
+			return "Spot";
+	}
+	return "Unknown";
+}
+
+glm::mat4 make_light_transform(const glm::vec3& position,
+							   const glm::vec3& direction)
+{
+	float len2 = glm::dot(direction, direction);
+	glm::vec3 forward = len2 > 1e-12f ? direction * (1.0f / std::sqrt(len2))
+									  : glm::vec3(0.0f, -1.0f, 0.0f);
+	glm::vec3 z = -forward;
+	glm::vec3 up = std::abs(z.y) < 0.99f ? glm::vec3(0.0f, 1.0f, 0.0f)
+										 : glm::vec3(1.0f, 0.0f, 0.0f);
+	glm::vec3 x = glm::normalize(glm::cross(up, z));
+	glm::vec3 y = glm::cross(z, x);
+
+	glm::mat4 m{1.0f};
+	m[0] = glm::vec4(x, 0.0f);
+	m[1] = glm::vec4(y, 0.0f);
+	m[2] = glm::vec4(z, 0.0f);
+	m[3] = glm::vec4(position, 1.0f);
+	return m;
+}
 
 uint32_t SceneGraph::add_node(const std::string& name,
 							  const glm::mat4& localTransform,
@@ -28,6 +71,17 @@ uint32_t SceneGraph::add_node(const std::string& name,
 	else
 		roots.push_back(idx);
 
+	return idx;
+}
+
+uint32_t SceneGraph::add_light_node(const std::string& name,
+									const LightComponent& light,
+									const glm::mat4& localTransform,
+									std::optional<uint32_t> parentId)
+{
+	uint32_t idx =
+		add_node(name, localTransform, std::nullopt, {}, 0, parentId);
+	nodes[idx].light = light;
 	return idx;
 }
 
@@ -100,4 +154,62 @@ void SceneGraph::update_node(uint32_t nodeIdx, const glm::mat4& parentWorld)
 	node.worldTransform = parentWorld * node.localTransform;
 	for (uint32_t child : node.children)
 		update_node(child, node.worldTransform);
+}
+
+void SceneGraph::collect_lights(LightEnvironment& env) const
+{
+	env.directionals.clear();
+	env.points.clear();
+	env.spots.clear();
+
+	for (const auto& node : nodes)
+	{
+		if (!node.light.has_value()) continue;
+		const LightComponent& l = node.light.value();
+
+		glm::vec3 position = glm::vec3(node.worldTransform[3]);
+		// -Z axis, normalized so node scale never skews the direction.
+		glm::vec3 zAxis = glm::vec3(node.worldTransform[2]);
+		float zLen2 = glm::dot(zAxis, zAxis);
+		glm::vec3 direction = zLen2 > 1e-12f
+								  ? -zAxis * (1.0f / std::sqrt(zLen2))
+								  : glm::vec3(0.0f, -1.0f, 0.0f);
+
+		switch (l.type)
+		{
+			case LightType::Directional:
+			{
+				DirectionalLight d;
+				d.position = position;
+				d.direction = direction;
+				d.color = l.color;
+				d.intensity = l.intensity;
+				env.directionals.push_back(d);
+				break;
+			}
+			case LightType::Point:
+			{
+				PointLight p;
+				p.position = position;
+				p.color = l.color;
+				p.intensity = l.intensity;
+				p.radius = l.radius;
+				env.points.push_back(p);
+				break;
+			}
+			case LightType::Spot:
+			{
+				SpotLight sp;
+				sp.position = position;
+				sp.direction = direction;
+				sp.color = l.color;
+				sp.intensity = l.intensity;
+				sp.radius = l.radius;
+				sp.innerConeAngle = l.innerConeAngle;
+				sp.outerConeAngle = l.outerConeAngle;
+				env.spots.push_back(sp);
+				break;
+			}
+		}
+	}
 }

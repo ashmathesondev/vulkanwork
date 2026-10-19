@@ -15,3 +15,4 @@ imgui.ini
 local.properties
 dist/
 **.log
+models/splats/parish_church_scene.ply

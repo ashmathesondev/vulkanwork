@@ -56,7 +56,15 @@ layout(std430, set = 1, binding = 4) buffer ValsA { uint valsA[]; };
 layout(std430, set = 1, binding = 5) buffer ValsB { uint valsB[]; };
 // (hist / prefix bindings 6 / 7 not used here)
 
-layout(push_constant) uniform PC { uint N; } push;
+// Shares the compute pipeline layout with the sort passes, which only read the
+// first 16 bytes. model = splat cloud object-to-world transform.
+layout(push_constant) uniform PC {
+    uint N;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
+    mat4 model;
+} push;
 
 // ---- Spherical harmonics constants -----------------------------------------
 const float C0  = 0.28209479177387814;
@@ -87,56 +95,64 @@ uint float_to_sort_key(float f)
     return bits ^ mask;
 }
 
-// ---- Build 3x3 covariance from quaternion (wxyz) + log-scale ---------------
-// Returns upper-triangle of Σ = R * S^2 * R^T (symmetric 3x3)
-// q = (w, x, y, z)
+// ---- Rotation matrix from a unit quaternion q = (w, x, y, z) ---------------
+// GLSL matrix constructors are column-major, so each line below is a COLUMN.
 mat3 quat_to_rotation(vec4 q)
 {
     float w = q.x, x = q.y, y = q.z, z = q.w;
     return mat3(
-        1.0 - 2.0*(y*y + z*z),  2.0*(x*y - w*z),        2.0*(x*z + w*y),
-        2.0*(x*y + w*z),        1.0 - 2.0*(x*x + z*z),  2.0*(y*z - w*x),
-        2.0*(x*z - w*y),        2.0*(y*z + w*x),        1.0 - 2.0*(x*x + y*y)
+        1.0 - 2.0*(y*y + z*z),  2.0*(x*y + w*z),        2.0*(x*z - w*y),       // col 0
+        2.0*(x*y - w*z),        1.0 - 2.0*(x*x + z*z),  2.0*(y*z + w*x),       // col 1
+        2.0*(x*z + w*y),        2.0*(y*z - w*x),        1.0 - 2.0*(x*x + y*y)  // col 2
     );
 }
 
-// Returns upper-left 2x2 of the projected 2D covariance
-// W = view*model (upper-left 3x3 of view matrix), t = view-space position
-vec3 compute_cov2d(mat3 W, vec3 viewPos, vec3 logScale, vec4 rotation)
+// ---- Project the 3D covariance to a 2D pixel-space covariance --------------
+// W:       object-to-view linear part (upper-left 3x3 of view * model)
+// viewPos: splat centre in view space (camera looks down -Z, so z < 0)
+// focal:   focal lengths in pixels (fx, fy)
+// Returns [a, b, c] for the symmetric 2x2 [[a, b], [b, c]].
+vec3 compute_cov2d(mat3 W, vec3 viewPos, vec2 focal, vec3 logScale,
+                   vec4 rotation)
 {
-    // Scale
     vec3 s = exp(logScale);
-
-    // Rotation matrix from quaternion
     mat3 R = quat_to_rotation(rotation);
 
-    // 3D covariance: Sigma3 = R * diag(s^2) * R^T
-    mat3 S = mat3(s.x,0,0, 0,s.y,0, 0,0,s.z);
-    mat3 RS = R * S;
+    // Sigma3 = R * S^2 * R^T  (object space)
+    mat3 RS = R * mat3(s.x, 0.0, 0.0, 0.0, s.y, 0.0, 0.0, 0.0, s.z);
     mat3 Sigma3 = RS * transpose(RS);
 
-    // Jacobian of perspective projection at viewPos
-    float tx = viewPos.x;
-    float ty = viewPos.y;
-    float tz = viewPos.z;
-    float l  = length(viewPos);
-
+    // Jacobian of view space -> pixels, with pixel y pointing down:
+    //   u = cx - fx * x / z      v = cy + fy * y / z
+    float tz  = viewPos.z;
+    float tz2 = tz * tz;
+    // Column-major: columns are d/dx, d/dy, d/dz; third row unused.
     mat3 J = mat3(
-        1.0/tz,  0.0,    -tx/(tz*tz),
-        0.0,     1.0/tz, -ty/(tz*tz),
-        0.0,     0.0,     0.0
+        -focal.x / tz,               0.0,                         0.0,
+         0.0,                        focal.y / tz,                0.0,
+         focal.x * viewPos.x / tz2, -focal.y * viewPos.y / tz2,   0.0
     );
 
-    // Transform covariance to camera space: W * Sigma3 * W^T
-    // then apply Jacobian: J * (W * Sigma3 * W^T) * J^T
-    // Take upper-left 2x2
     mat3 T = J * W;
-    mat3 Sigma2_3d = T * Sigma3 * transpose(T);
+    mat3 cov = T * Sigma3 * transpose(T);
 
-    // Return [a, b, c] = upper-triangle of the 2x2 part
-    return vec3(Sigma2_3d[0][0] + 0.3,  // small diagonal bias to prevent degenerate
-                Sigma2_3d[0][1],
-                Sigma2_3d[1][1] + 0.3);
+    // Low-pass filter: every splat covers at least ~one pixel (as in 3DGS).
+    return vec3(cov[0][0] + 0.3, cov[0][1], cov[1][1] + 0.3);
+}
+
+// ---- sRGB -> linear (splat colours are trained against sRGB images) -------
+vec3 srgb_to_linear(vec3 c)
+{
+    vec3 lo = c / 12.92;
+    vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));
+    return mix(lo, hi, step(vec3(0.04045), c));
+}
+
+void write_culled(uint idx)
+{
+    prepData[idx * 10u + 8u] = 0.0;  // alpha 0: vertex shader skips it
+    keysA[idx] = 0u;
+    valsA[idx] = idx;
 }
 
 // ---- Evaluate SH for one channel -------------------------------------------
@@ -177,6 +193,9 @@ void main()
     vec3  pos     = vec3(data[base+0], data[base+1], data[base+2]);
     float opacity = data[base+3];
     vec4  rot     = vec4(data[base+4], data[base+5], data[base+6], data[base+7]);
+    // Trained quaternions are not stored normalized.
+    float rotLen  = length(rot);
+    rot = rotLen > 1e-8 ? rot / rotLen : vec4(1.0, 0.0, 0.0, 0.0);
     vec3  scale   = vec3(data[base+8], data[base+9], data[base+10]);
 
     // sh layout in RawSplat:
@@ -187,33 +206,41 @@ void main()
     uint shBase = base + 12u;
 
     // ---- Transform to view space -------------------------------------------
-    vec4  viewPos4 = frame.view * vec4(pos, 1.0);
-    vec3  viewPos  = viewPos4.xyz;
+    vec3  worldPos = (push.model * vec4(pos, 1.0)).xyz;
+    vec3  viewPos  = (frame.view * vec4(worldPos, 1.0)).xyz;
 
-    // Cull behind camera
-    if (viewPos.z >= 0.0) {
-        // Write a "skip" marker: alpha = 0
-        prepData[idx*10u + 8u] = 0.0;
-        keysA[idx] = 0u;
-        valsA[idx] = idx;
+    // Cull behind / too close to the camera (Jacobian blows up near z = 0)
+    if (viewPos.z > -0.2) {
+        write_culled(idx);
         return;
     }
 
     // ---- Project center to screen pixels -----------------------------------
+    // frame.proj already contains the Vulkan Y flip, so NDC y points down,
+    // matching gl_FragCoord (origin top-left).
     vec4 clipPos = frame.proj * vec4(viewPos, 1.0);
     vec3 ndc     = clipPos.xyz / clipPos.w;
-    vec2 center  = vec2(
-        ( ndc.x * 0.5 + 0.5) * float(frame.screenWidth),
-        (-ndc.y * 0.5 + 0.5) * float(frame.screenHeight)  // flip Y for screen
-    );
+
+    // Frustum cull with a margin so large splats at the edge still draw
+    if (abs(ndc.x) > 1.3 || abs(ndc.y) > 1.3) {
+        write_culled(idx);
+        return;
+    }
+
+    vec2 screen = vec2(float(frame.screenWidth), float(frame.screenHeight));
+    vec2 center = (ndc.xy * 0.5 + 0.5) * screen;
     float clipDepth = ndc.z;  // z in [0,1] for Vulkan
 
     // ---- 2D covariance projection ------------------------------------------
-    mat3 W    = mat3(frame.view);  // upper-left 3x3
-    vec3 cov2d = compute_cov2d(W, viewPos, scale, rot);
+    vec2 focal = vec2(frame.proj[0][0], abs(frame.proj[1][1])) * 0.5 * screen;
+    mat3 W     = mat3(frame.view) * mat3(push.model);
+    vec3 cov2d = compute_cov2d(W, viewPos, focal, scale, rot);
 
     // ---- Spherical harmonics -----------------------------------------------
-    vec3 dir = normalize(pos - frame.cameraPos);  // world-space, splat->camera dir
+    // SH is defined in the cloud's object space: bring the view direction
+    // (camera -> splat) back through the model transform.
+    vec3 dirWorld = normalize(worldPos - frame.cameraPos);
+    vec3 dir = normalize(inverse(mat3(push.model)) * dirWorld);
 
     float rSH[16], gSH[16], bSH[16];
     rSH[0] = data[shBase + 0u]; // R_dc
@@ -225,11 +252,18 @@ void main()
         bSH[1+k] = data[shBase + 33u + uint(k)];
     }
 
-    float r = clamp(eval_sh_channel(rSH, dir), 0.0, 1.0);
-    float g = clamp(eval_sh_channel(gSH, dir), 0.0, 1.0);
-    float b = clamp(eval_sh_channel(bSH, dir), 0.0, 1.0);
+    vec3 rgb = clamp(vec3(eval_sh_channel(rSH, dir),
+                          eval_sh_channel(gSH, dir),
+                          eval_sh_channel(bSH, dir)), 0.0, 1.0);
+    // The swapchain is sRGB and re-encodes on write, so output linear.
+    rgb = srgb_to_linear(rgb);
+    float r = rgb.r, g = rgb.g, b = rgb.b;
 
     float alpha = sigmoid(opacity);
+    if (alpha < 1.0 / 255.0) {
+        write_culled(idx);
+        return;
+    }
 
     // ---- Write preprocessBuffer (10 floats per splat) ----------------------
     uint out0 = idx * 10u;

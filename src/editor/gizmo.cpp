@@ -1,7 +1,12 @@
 #include "gizmo.h"
 
 #include <imgui.h>
+
+// ImGuizmo.h is not self-contained and must follow imgui.h. Keep include
+// sorting away from it.
+// clang-format off
 #include <ImGuizmo.h>
+// clang-format on
 
 #include <glm/gtc/type_ptr.hpp>
 

@@ -14,5 +14,6 @@ struct DebugWindow
 			  Selection& selection, Gizmo& gizmo, SceneGraph& sceneGraph);
 
 	bool importRequested = false;
+	bool importSplatRequested = false;
 	bool deleteRequested = false;
 };

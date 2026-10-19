@@ -38,6 +38,38 @@ static glm::mat4 json_to_mat4(const json& j)
 	return m;
 }
 
+static json light_to_json(const LightComponent& l)
+{
+	return {
+		{"type", light_type_name(l.type)},
+		{"color", vec3_to_json(l.color)},
+		{"intensity", l.intensity},
+		{"radius", l.radius},
+		{"innerConeAngle", l.innerConeAngle},
+		{"outerConeAngle", l.outerConeAngle},
+	};
+}
+
+static bool json_to_light(const json& j, LightComponent& out)
+{
+	std::string type = j.value("type", std::string{});
+	if (type == "Directional")
+		out.type = LightType::Directional;
+	else if (type == "Point")
+		out.type = LightType::Point;
+	else if (type == "Spot")
+		out.type = LightType::Spot;
+	else
+		return false;
+
+	if (j.contains("color")) out.color = json_to_vec3(j["color"]);
+	out.intensity = j.value("intensity", 1.0f);
+	out.radius = j.value("radius", 10.0f);
+	out.innerConeAngle = j.value("innerConeAngle", glm::radians(25.0f));
+	out.outerConeAngle = j.value("outerConeAngle", glm::radians(35.0f));
+	return true;
+}
+
 // =============================================================================
 // Save
 // =============================================================================
@@ -47,7 +79,7 @@ bool save_scene_file(const std::string& path, const SceneFileData& data)
 	LOG_INFO("save_scene_file: writing %zu nodes to '%s'",
 			 data.sceneGraph.nodes.size(), path.c_str());
 	json root;
-	root["version"] = 1;
+	root["version"] = 2;
 	root["modelPath"] = data.modelPath;
 
 	// Camera
@@ -65,43 +97,7 @@ bool save_scene_file(const std::string& path, const SceneFileData& data)
 		{"intensity", data.lights.ambient.intensity},
 	};
 
-	json dirs = json::array();
-	for (const auto& d : data.lights.directionals)
-	{
-		dirs.push_back({
-			{"direction", vec3_to_json(d.direction)},
-			{"color", vec3_to_json(d.color)},
-			{"intensity", d.intensity},
-		});
-	}
-	lightsObj["directionals"] = dirs;
-
-	json pts = json::array();
-	for (const auto& p : data.lights.points)
-	{
-		pts.push_back({
-			{"position", vec3_to_json(p.position)},
-			{"color", vec3_to_json(p.color)},
-			{"intensity", p.intensity},
-			{"radius", p.radius},
-		});
-	}
-	lightsObj["points"] = pts;
-
-	json spts = json::array();
-	for (const auto& s : data.lights.spots)
-	{
-		spts.push_back({
-			{"position", vec3_to_json(s.position)},
-			{"direction", vec3_to_json(s.direction)},
-			{"color", vec3_to_json(s.color)},
-			{"intensity", s.intensity},
-			{"radius", s.radius},
-			{"innerConeAngle", s.innerConeAngle},
-			{"outerConeAngle", s.outerConeAngle},
-		});
-	}
-	lightsObj["spots"] = spts;
+	// Directional/point/spot lights are saved on their scene nodes.
 	root["lights"] = lightsObj;
 
 	// Scene graph nodes
@@ -118,6 +114,17 @@ bool save_scene_file(const std::string& path, const SceneFileData& data)
 		n["meshIndexInModel"] = node.meshIndexInModel;
 		n["parent"] =
 			node.parent.has_value() ? json(node.parent.value()) : json(nullptr);
+		if (node.light.has_value()) n["light"] = light_to_json(*node.light);
+		if (node.splat.has_value())
+		{
+			n["splat"] = {
+				{"path", node.splat->path},
+				{"mode", node.splat->mode == SplatRenderMode::Points
+							 ? "Points"
+							 : "Gaussian"},
+				{"pointSize", node.splat->pointSize},
+			};
+		}
 
 		json children = json::array();
 		for (uint32_t c : node.children) children.push_back(c);
@@ -197,6 +204,8 @@ bool load_scene_file(const std::string& path, SceneFileData& data)
 			data.lights.ambient.intensity = amb.value("intensity", 0.03f);
 		}
 
+		// Version 1 kept typed light arrays here. They are converted to light
+		// nodes once the node list has been read.
 		data.lights.directionals.clear();
 		if (lts.contains("directionals"))
 		{
@@ -270,6 +279,35 @@ bool load_scene_file(const std::string& path, SceneFileData& data)
 			if (n.contains("parent") && !n["parent"].is_null())
 				node.parent = n["parent"].get<uint32_t>();
 
+			if (n.contains("splat"))
+			{
+				const auto& sj = n["splat"];
+				SplatComponent splat;
+				splat.path = sj.value("path", std::string{});
+				splat.mode = sj.value("mode", std::string{}) == "Points"
+								 ? SplatRenderMode::Points
+								 : SplatRenderMode::Gaussian;
+				splat.pointSize = sj.value("pointSize", 2.0f);
+				if (!splat.path.empty())
+					node.splat = splat;
+				else
+					LOG_WARN(
+						"load_scene_file: node '%s' has a splat without a "
+						"path",
+						node.name.c_str());
+			}
+
+			if (n.contains("light"))
+			{
+				LightComponent light;
+				if (json_to_light(n["light"], light))
+					node.light = light;
+				else
+					LOG_WARN(
+						"load_scene_file: node '%s' has unknown light type",
+						node.name.c_str());
+			}
+
 			if (n.contains("children"))
 			{
 				for (const auto& c : n["children"])
@@ -287,6 +325,55 @@ bool load_scene_file(const std::string& path, SceneFileData& data)
 				data.sceneGraph.roots.push_back(i);
 		}
 	}
+
+	// Version 1 files: turn legacy light arrays into root light nodes.
+	uint32_t legacyCount = 0;
+	for (size_t i = 0; i < data.lights.directionals.size(); ++i)
+	{
+		const auto& d = data.lights.directionals[i];
+		LightComponent l;
+		l.type = LightType::Directional;
+		l.color = d.color;
+		l.intensity = d.intensity;
+		data.sceneGraph.add_light_node(
+			"Directional Light " + std::to_string(i), l,
+			make_light_transform(d.position, d.direction));
+		++legacyCount;
+	}
+	for (size_t i = 0; i < data.lights.points.size(); ++i)
+	{
+		const auto& p = data.lights.points[i];
+		LightComponent l;
+		l.type = LightType::Point;
+		l.color = p.color;
+		l.intensity = p.intensity;
+		l.radius = p.radius;
+		data.sceneGraph.add_light_node(
+			"Point Light " + std::to_string(i), l,
+			make_light_transform(p.position, glm::vec3(0.0f, -1.0f, 0.0f)));
+		++legacyCount;
+	}
+	for (size_t i = 0; i < data.lights.spots.size(); ++i)
+	{
+		const auto& sp = data.lights.spots[i];
+		LightComponent l;
+		l.type = LightType::Spot;
+		l.color = sp.color;
+		l.intensity = sp.intensity;
+		l.radius = sp.radius;
+		l.innerConeAngle = sp.innerConeAngle;
+		l.outerConeAngle = sp.outerConeAngle;
+		data.sceneGraph.add_light_node(
+			"Spot Light " + std::to_string(i), l,
+			make_light_transform(sp.position, sp.direction));
+		++legacyCount;
+	}
+	data.lights.directionals.clear();
+	data.lights.points.clear();
+	data.lights.spots.clear();
+	if (legacyCount > 0)
+		LOG_INFO("load_scene_file: converted %u legacy light(s) to nodes",
+				 legacyCount);
 
 	return true;
 }
