@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <glm/glm.hpp>
@@ -87,15 +88,7 @@ void App::init_vulkan()
 					   Renderer::MAX_FRAMES_IN_FLIGHT, renderer.pack_file());
 	renderer.set_splat_system(&*splatSystem_);
 
-	// Initialize default lights (matching previous hardcoded directional)
-	DirectionalLight sun;
-	sun.direction = glm::normalize(glm::vec3(0.5f, -1.0f, 0.3f));
-	sun.color = glm::vec3(1.0f);
-	sun.intensity = 3.0f;
-	lights.directionals.push_back(sun);
-
-	lights.ambient.color = glm::vec3(1.0f);
-	lights.ambient.intensity = 0.03f;
+	add_default_lights();
 }
 
 void App::main_loop()
@@ -153,7 +146,8 @@ void App::main_loop()
 		if (showLoadDialog_)
 		{
 			IGFD::FileDialogConfig config;
-			config.path = ".";
+			config.path = scene_dialog_dir();
+			config.flags = ImGuiFileDialogFlags_Modal;
 			ImGuiFileDialog::Instance()->OpenDialog("LoadScene", "Load Scene",
 													".scene", config);
 			showLoadDialog_ = false;
@@ -161,9 +155,16 @@ void App::main_loop()
 		if (showSaveDialog_)
 		{
 			IGFD::FileDialogConfig config;
-			config.path = ".";
-			ImGuiFileDialog::Instance()->OpenDialog("SaveScene", "Save Scene",
-													".scene", config);
+			config.path = scene_dialog_dir();
+			config.fileName = currentScenePath.empty()
+								  ? std::string("Untitled.scene")
+								  : std::filesystem::path(currentScenePath)
+										.filename()
+										.string();
+			config.flags = ImGuiFileDialogFlags_Modal |
+						   ImGuiFileDialogFlags_ConfirmOverwrite;
+			ImGuiFileDialog::Instance()->OpenDialog(
+				"SaveScene", "Save Scene As", ".scene", config);
 			showSaveDialog_ = false;
 		}
 		if (showImportDialog_)
@@ -184,25 +185,30 @@ void App::main_loop()
 		}
 
 		// Render file dialogs
-		if (ImGuiFileDialog::Instance()->Display("LoadScene"))
+		const ImVec2 dialogMinSize(640.0f, 400.0f);
+		if (ImGuiFileDialog::Instance()->Display(
+				"LoadScene", ImGuiWindowFlags_NoCollapse, dialogMinSize))
 		{
 			if (ImGuiFileDialog::Instance()->IsOk())
 				do_load_scene(ImGuiFileDialog::Instance()->GetFilePathName());
 			ImGuiFileDialog::Instance()->Close();
 		}
-		if (ImGuiFileDialog::Instance()->Display("SaveScene"))
+		if (ImGuiFileDialog::Instance()->Display(
+				"SaveScene", ImGuiWindowFlags_NoCollapse, dialogMinSize))
 		{
 			if (ImGuiFileDialog::Instance()->IsOk())
 				do_save_scene(ImGuiFileDialog::Instance()->GetFilePathName());
 			ImGuiFileDialog::Instance()->Close();
 		}
-		if (ImGuiFileDialog::Instance()->Display("ImportMesh"))
+		if (ImGuiFileDialog::Instance()->Display(
+				"ImportMesh", ImGuiWindowFlags_NoCollapse, dialogMinSize))
 		{
 			if (ImGuiFileDialog::Instance()->IsOk())
 				do_import_mesh(ImGuiFileDialog::Instance()->GetFilePathName());
 			ImGuiFileDialog::Instance()->Close();
 		}
-		if (ImGuiFileDialog::Instance()->Display("ImportSplat"))
+		if (ImGuiFileDialog::Instance()->Display(
+				"ImportSplat", ImGuiWindowFlags_NoCollapse, dialogMinSize))
 		{
 			if (ImGuiFileDialog::Instance()->IsOk())
 				do_load_splat(ImGuiFileDialog::Instance()->GetFilePathName());
@@ -248,8 +254,9 @@ void App::main_loop()
 			}
 		}
 
-		// --- Sync scene graph → mesh transforms --------------------------
+		// --- Sync scene graph → mesh transforms and lights ---------------
 		sceneGraph.update_world_transforms();
+		sceneGraph.collect_lights(lights);
 		auto& meshes = renderer.meshes();
 		for (const auto& node : sceneGraph.nodes)
 		{
@@ -393,6 +400,24 @@ void App::process_input()
 // Scene graph
 // =============================================================================
 
+void App::add_default_lights()
+{
+	lights = LightEnvironment{};
+	lights.ambient.color = glm::vec3(1.0f);
+	lights.ambient.intensity = 0.03f;
+
+	LightComponent sun;
+	sun.type = LightType::Directional;
+	sun.color = glm::vec3(1.0f);
+	sun.intensity = 3.0f;
+	sceneGraph.add_light_node(
+		"Sun", sun,
+		make_light_transform(glm::vec3(0.0f, 5.0f, 0.0f),
+							 glm::vec3(0.5f, -1.0f, 0.3f)));
+	sceneGraph.update_world_transforms();
+	sceneGraph.collect_lights(lights);
+}
+
 void App::build_scene_graph()
 {
 	const auto& meshes = renderer.meshes();
@@ -411,6 +436,19 @@ void App::build_scene_graph()
 // Scene file operations
 // =============================================================================
 
+std::string App::scene_dialog_dir() const
+{
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	if (!currentScenePath.empty())
+	{
+		fs::path dir = fs::path(currentScenePath).parent_path();
+		if (!dir.empty() && fs::is_directory(dir, ec)) return dir.string();
+	}
+	if (fs::is_directory("Scenes", ec)) return "Scenes";
+	return ".";
+}
+
 void App::new_scene()
 {
 	renderer.unload_scene();
@@ -418,14 +456,7 @@ void App::new_scene()
 	sceneGraph.clear();
 	build_scene_graph();
 	camera = Camera{};
-	lights = LightEnvironment{};
-	lights.ambient.color = glm::vec3(1.0f);
-	lights.ambient.intensity = 0.03f;
-	DirectionalLight sun;
-	sun.direction = glm::normalize(glm::vec3(0.5f, -1.0f, 0.3f));
-	sun.color = glm::vec3(1.0f);
-	sun.intensity = 3.0f;
-	lights.directionals.push_back(sun);
+	add_default_lights();
 	selection.selectedNode.reset();
 	currentScenePath.clear();
 	modelPath.clear();
@@ -522,8 +553,9 @@ void App::do_load_scene(const std::string& path)
 	lights = data.lights;
 	modelPath = data.modelPath;
 
-	// Sync scene graph → mesh transforms
+	// Sync scene graph → mesh transforms and lights
 	sceneGraph.update_world_transforms();
+	sceneGraph.collect_lights(lights);
 	auto& meshes = renderer.meshes();
 	LOG_INFO("Post-load: %zu scene nodes, %zu renderer meshes",
 			 sceneGraph.nodes.size(), meshes.size());

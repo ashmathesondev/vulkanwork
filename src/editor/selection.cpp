@@ -91,6 +91,25 @@ void Selection::pick(float mouseX, float mouseY, float screenW, float screenH,
 		 ++i)
 	{
 		const auto& node = sceneGraph.nodes[i];
+
+		// Lights have no mesh: pick a small box around the light's origin.
+		if (node.light.has_value())
+		{
+			constexpr float LIGHT_PICK_HALF_EXTENT = 0.25f;
+			AABB box;
+			box.expand(glm::vec3(-LIGHT_PICK_HALF_EXTENT));
+			box.expand(glm::vec3(LIGHT_PICK_HALF_EXTENT));
+			glm::mat4 at = glm::translate(glm::mat4{1.0f},
+										  glm::vec3(node.worldTransform[3]));
+			float t = 0.0f;
+			if (ray_aabb(ray, box, at, t) && t < closestT)
+			{
+				closestT = t;
+				closestNode = i;
+			}
+			continue;
+		}
+
 		if (!node.meshIndex.has_value()) continue;
 
 		uint32_t mi = node.meshIndex.value();

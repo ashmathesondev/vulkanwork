@@ -1,16 +1,34 @@
 #include "debugWindow.h"
 
 #include <imgui.h>
-#include <ImGuizmo.h>
 
+// ImGuizmo.h is not self-contained and must follow imgui.h. Keep include
+// sorting away from it.
+// clang-format off
+#include <ImGuizmo.h>
+// clang-format on
+
+#include <algorithm>
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <string>
 
 #include "editor/gizmo.h"
 #include "editor/sceneGraph.h"
 #include "editor/selection.h"
 #include "graphics/light.h"
 #include "graphics/renderer.h"
+
+// ImGui lets windows overlap the main menu bar, which then swallows clicks
+// meant for File. Push the current window back into the viewport work area
+// (the region below the menu bar). Also corrects positions saved in imgui.ini.
+static void keep_below_menu_bar()
+{
+	const ImGuiViewport* vp = ImGui::GetMainViewport();
+	ImVec2 pos = ImGui::GetWindowPos();
+	if (pos.y < vp->WorkPos.y)
+		ImGui::SetWindowPos(ImVec2(pos.x, vp->WorkPos.y));
+}
 
 // Recursive helper to draw scene hierarchy tree
 static void draw_node_tree(SceneGraph& sceneGraph, uint32_t nodeIdx,
@@ -26,9 +44,15 @@ static void draw_node_tree(SceneGraph& sceneGraph, uint32_t nodeIdx,
 	if (isSelected) flags |= ImGuiTreeNodeFlags_Selected;
 	if (!hasChildren) flags |= ImGuiTreeNodeFlags_Leaf;
 
-	bool open = ImGui::TreeNodeEx(
-		reinterpret_cast<void*>(static_cast<uintptr_t>(nodeIdx)), flags, "%s",
-		node.name.c_str());
+	bool open =
+		node.light.has_value()
+			? ImGui::TreeNodeEx(
+				  reinterpret_cast<void*>(static_cast<uintptr_t>(nodeIdx)),
+				  flags, "%s  [%s light]", node.name.c_str(),
+				  light_type_name(node.light->type))
+			: ImGui::TreeNodeEx(
+				  reinterpret_cast<void*>(static_cast<uintptr_t>(nodeIdx)),
+				  flags, "%s", node.name.c_str());
 
 	if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
 		selection.selectedNode = nodeIdx;
@@ -39,6 +63,80 @@ static void draw_node_tree(SceneGraph& sceneGraph, uint32_t nodeIdx,
 			draw_node_tree(sceneGraph, child, selection);
 		ImGui::TreePop();
 	}
+}
+
+// Add a light node at a sensible default placement and select it.
+static void add_light(SceneGraph& sceneGraph, Selection& selection,
+					  LightType type)
+{
+	LightComponent light;
+	light.type = type;
+	glm::vec3 position(0.0f, 2.0f, 0.0f);
+	glm::vec3 direction(0.0f, -1.0f, 0.0f);
+	if (type == LightType::Directional)
+	{
+		light.intensity = 3.0f;
+		position = glm::vec3(0.0f, 5.0f, 0.0f);
+		direction = glm::vec3(0.5f, -1.0f, 0.3f);
+	}
+	else if (type == LightType::Spot)
+	{
+		light.intensity = 10.0f;
+		position = glm::vec3(0.0f, 4.0f, 0.0f);
+	}
+	else
+	{
+		light.intensity = 5.0f;
+	}
+
+	uint32_t count = 0;
+	for (const auto& n : sceneGraph.nodes)
+		if (n.light.has_value() && n.light->type == type) ++count;
+	std::string name =
+		std::string(light_type_name(type)) + " Light " + std::to_string(count);
+
+	selection.selectedNode = sceneGraph.add_light_node(
+		name, light, make_light_transform(position, direction));
+	sceneGraph.update_world_transforms();
+}
+
+// Editable properties of a light node.
+static void draw_light_inspector(LightComponent& light)
+{
+	ImGui::Separator();
+	ImGui::Text("Light");
+
+	int typeInt = static_cast<int>(light.type);
+	const char* types[] = {"Directional", "Point", "Spot"};
+	if (ImGui::Combo("Type", &typeInt, types, IM_ARRAYSIZE(types)))
+		light.type = static_cast<LightType>(typeInt);
+
+	ImGui::ColorEdit3("Color", &light.color.x);
+	ImGui::DragFloat("Intensity", &light.intensity, 0.05f, 0.0f, 1000.0f);
+
+	if (light.type != LightType::Directional)
+		ImGui::DragFloat("Radius", &light.radius, 0.05f, 0.1f, 500.0f);
+
+	if (light.type == LightType::Spot)
+	{
+		float innerDeg = glm::degrees(light.innerConeAngle);
+		float outerDeg = glm::degrees(light.outerConeAngle);
+		if (ImGui::SliderFloat("Inner Cone", &innerDeg, 1.0f, 89.0f))
+		{
+			light.innerConeAngle = glm::radians(innerDeg);
+			light.outerConeAngle =
+				std::max(light.outerConeAngle, light.innerConeAngle);
+		}
+		if (ImGui::SliderFloat("Outer Cone", &outerDeg, 1.0f, 89.0f))
+		{
+			light.outerConeAngle = glm::radians(outerDeg);
+			light.innerConeAngle =
+				std::min(light.innerConeAngle, light.outerConeAngle);
+		}
+	}
+
+	if (light.type != LightType::Point)
+		ImGui::TextDisabled("Direction follows the node's -Z axis (rotate)");
 }
 
 void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
@@ -52,6 +150,7 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 	ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_FirstUseEver);
 	ImGui::Begin("Frame Statistics");
+	keep_below_menu_bar();
 	ImGui::Text("FPS:        %.1f", io.Framerate);
 	ImGui::Text("Frame Time: %.3f ms", 1000.0f / io.Framerate);
 	ImGui::Separator();
@@ -74,6 +173,7 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 	ImGui::SetNextWindowPos(ImVec2(320, 10), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSize(ImVec2(280, 0), ImGuiCond_FirstUseEver);
 	ImGui::Begin("Depth / Rasterizer Debug");
+	keep_below_menu_bar();
 
 	ImGui::Checkbox("Skip Depth Prepass", &renderer.debugSkipDepthPrepass_);
 	ImGui::Checkbox("Disable Backface Culling", &renderer.debugDisableCulling_);
@@ -96,6 +196,7 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 	ImGui::SetNextWindowPos(ImVec2(10, 300), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSize(ImVec2(350, 0), ImGuiCond_FirstUseEver);
 	ImGui::Begin("Lighting");
+	keep_below_menu_bar();
 
 	// Ambient
 	if (ImGui::CollapsingHeader("Ambient", ImGuiTreeNodeFlags_DefaultOpen))
@@ -105,86 +206,36 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 						   0.0f, 1.0f);
 	}
 
-	// Directional lights
-	if (ImGui::CollapsingHeader("Directional Lights",
-								ImGuiTreeNodeFlags_DefaultOpen))
+	// Directional / point / spot lights live in the scene graph.
+	if (ImGui::CollapsingHeader("Scene Lights", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		for (size_t i = 0; i < lights.directionals.size(); ++i)
+		if (ImGui::Button("Add Directional"))
+			add_light(sceneGraph, selection, LightType::Directional);
+		ImGui::SameLine();
+		if (ImGui::Button("Add Point"))
+			add_light(sceneGraph, selection, LightType::Point);
+		ImGui::SameLine();
+		if (ImGui::Button("Add Spot"))
+			add_light(sceneGraph, selection, LightType::Spot);
+
+		bool any = false;
+		for (uint32_t i = 0; i < static_cast<uint32_t>(sceneGraph.nodes.size());
+			 ++i)
 		{
+			const auto& node = sceneGraph.nodes[i];
+			if (!node.light.has_value()) continue;
+			any = true;
 			ImGui::PushID(static_cast<int>(i));
-			auto& d = lights.directionals[i];
-			ImGui::Text("Directional %zu", i);
-			ImGui::SliderFloat3("Direction", &d.direction.x, -1.0f, 1.0f);
-			ImGui::ColorEdit3("Color", &d.color.x);
-			ImGui::SliderFloat("Intensity", &d.intensity, 0.0f, 20.0f);
-			if (ImGui::Button("Remove"))
-			{
-				lights.directionals.erase(lights.directionals.begin() +
-										  static_cast<ptrdiff_t>(i));
-				ImGui::PopID();
-				break;
-			}
-			ImGui::Separator();
+			bool isSelected = selection.selectedNode.has_value() &&
+							  selection.selectedNode.value() == i;
+			std::string label =
+				node.name + "  [" + light_type_name(node.light->type) + "]";
+			if (ImGui::Selectable(label.c_str(), isSelected))
+				selection.selectedNode = i;
 			ImGui::PopID();
 		}
-		if (ImGui::Button("Add Directional")) lights.directionals.push_back({});
-	}
-
-	// Point lights
-	if (ImGui::CollapsingHeader("Point Lights"))
-	{
-		for (size_t i = 0; i < lights.points.size(); ++i)
-		{
-			ImGui::PushID(static_cast<int>(1000 + i));
-			auto& p = lights.points[i];
-			ImGui::Text("Point %zu", i);
-			ImGui::DragFloat3("Position", &p.position.x, 0.1f);
-			ImGui::ColorEdit3("Color", &p.color.x);
-			ImGui::SliderFloat("Intensity", &p.intensity, 0.0f, 100.0f);
-			ImGui::SliderFloat("Radius", &p.radius, 0.1f, 50.0f);
-			if (ImGui::Button("Remove"))
-			{
-				lights.points.erase(lights.points.begin() +
-									static_cast<ptrdiff_t>(i));
-				ImGui::PopID();
-				break;
-			}
-			ImGui::Separator();
-			ImGui::PopID();
-		}
-		if (ImGui::Button("Add Point Light")) lights.points.push_back({});
-	}
-
-	// Spot lights
-	if (ImGui::CollapsingHeader("Spot Lights"))
-	{
-		for (size_t i = 0; i < lights.spots.size(); ++i)
-		{
-			ImGui::PushID(static_cast<int>(2000 + i));
-			auto& s = lights.spots[i];
-			ImGui::Text("Spot %zu", i);
-			ImGui::DragFloat3("Position", &s.position.x, 0.1f);
-			ImGui::SliderFloat3("Direction", &s.direction.x, -1.0f, 1.0f);
-			ImGui::ColorEdit3("Color", &s.color.x);
-			ImGui::SliderFloat("Intensity", &s.intensity, 0.0f, 100.0f);
-			ImGui::SliderFloat("Radius", &s.radius, 0.1f, 50.0f);
-			float innerDeg = glm::degrees(s.innerConeAngle);
-			float outerDeg = glm::degrees(s.outerConeAngle);
-			if (ImGui::SliderFloat("Inner Cone", &innerDeg, 1.0f, 89.0f))
-				s.innerConeAngle = glm::radians(innerDeg);
-			if (ImGui::SliderFloat("Outer Cone", &outerDeg, 1.0f, 89.0f))
-				s.outerConeAngle = glm::radians(outerDeg);
-			if (ImGui::Button("Remove"))
-			{
-				lights.spots.erase(lights.spots.begin() +
-								   static_cast<ptrdiff_t>(i));
-				ImGui::PopID();
-				break;
-			}
-			ImGui::Separator();
-			ImGui::PopID();
-		}
-		if (ImGui::Button("Add Spot Light")) lights.spots.push_back({});
+		if (!any) ImGui::TextDisabled("No lights in scene");
+		ImGui::TextDisabled("Select a light to edit it in Scene Hierarchy");
 	}
 
 	ImGui::End();
@@ -193,6 +244,7 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 	ImGui::SetNextWindowPos(ImVec2(10, 550), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_FirstUseEver);
 	ImGui::Begin("Scene Hierarchy");
+	keep_below_menu_bar();
 
 	if (ImGui::Button("Import Mesh...")) importRequested = true;
 
@@ -265,18 +317,36 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 			ImGuizmo::DecomposeMatrixToComponents(
 				glm::value_ptr(node.localTransform), matrixTranslation,
 				matrixRotation, matrixScale);
-			ImGui::Text("Position: %.2f, %.2f, %.2f", matrixTranslation[0],
-						matrixTranslation[1], matrixTranslation[2]);
-			ImGui::Text("Rotation: %.1f, %.1f, %.1f", matrixRotation[0],
-						matrixRotation[1], matrixRotation[2]);
-			ImGui::Text("Scale:    %.2f, %.2f, %.2f", matrixScale[0],
-						matrixScale[1], matrixScale[2]);
+			if (node.light.has_value())
+			{
+				// Light nodes: editable position/rotation, scale is unused.
+				bool changed =
+					ImGui::DragFloat3("Position", matrixTranslation, 0.05f);
+				changed |= ImGui::DragFloat3("Rotation", matrixRotation, 0.5f);
+				if (changed)
+				{
+					float unitScale[3] = {1.0f, 1.0f, 1.0f};
+					ImGuizmo::RecomposeMatrixFromComponents(
+						matrixTranslation, matrixRotation, unitScale,
+						glm::value_ptr(node.localTransform));
+				}
+				draw_light_inspector(*node.light);
+			}
+			else
+			{
+				ImGui::Text("Position: %.2f, %.2f, %.2f", matrixTranslation[0],
+							matrixTranslation[1], matrixTranslation[2]);
+				ImGui::Text("Rotation: %.1f, %.1f, %.1f", matrixRotation[0],
+							matrixRotation[1], matrixRotation[2]);
+				ImGui::Text("Scale:    %.2f, %.2f, %.2f", matrixScale[0],
+							matrixScale[1], matrixScale[2]);
+			}
 		}
 	}
 	else
 	{
 		ImGui::Text("No node selected");
-		ImGui::Text("Left-click to select a mesh");
+		ImGui::Text("Left-click to select a mesh or light");
 	}
 
 	ImGui::End();

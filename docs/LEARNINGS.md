@@ -57,6 +57,10 @@ This project features a complete, end-to-end asset pipeline, which is a major le
 
 -   **Seamless ImGui Integration:** ImGui is integrated directly into the main render pass and command buffer. This is an efficient approach that avoids the complexity of multiple render passes for UI. The project also correctly gives ImGui its own dedicated descriptor pool.
 
+-   **Keep Windows Off the Main Menu Bar:** ImGui windows can be dragged over the main menu bar, and positions persist in `imgui.ini`. A window at the default `(10, 10)` covered the File menu, so Load and Save As looked unimplemented even though they worked. Each editor window now clamps itself below `ImGui::GetMainViewport()->WorkPos` after `Begin()`, which also repairs saved layouts.
+
+-   **File Dialog Settings Matter:** ImGuiFileDialog defaults to no flags when given a config. Save dialogs need `ImGuiFileDialogFlags_ConfirmOverwrite`, and both load and save should be `Modal`, with a minimum size passed to `Display()`.
+
 -   **Validation Layers are Essential:** The setup of the `VkDebugUtilsMessengerEXT` in the `Renderer` is non-negotiable for serious Vulkan development. The validation layers are the single most important tool for catching errors, and the detailed feedback they provide is invaluable.
 
 ## 6. Scene File Format & Multi-Model Scenes
@@ -82,3 +86,49 @@ This project features a complete, end-to-end asset pipeline, which is a major le
     -   **Flush after every write** (`fflush`): if the application crashes, the last log line is not lost in a buffer.
     -   **Mirror to `stderr`**: log messages are visible immediately in the IDE output window without needing to open a file.
     -   **Platform-aware log path**: on Windows, write to `%USERPROFILE%\VulkanWork\vulkanwork.log`; on Linux, follow XDG conventions. This keeps logs out of the working directory (which may be the project root) and in a predictable per-user location.
+
+## 8. Build System, Toolchains & Packaging
+
+-   **One Makefile, Two Shells:** GNU Make picks recipes per OS (`ifeq ($(OS),Windows_NT)`): PowerShell on Windows, `/bin/sh` on Linux. `COMPILER=` selects MSVC, Clang or GCC. Single-config generators (Ninja, Unix Makefiles) get one build tree per `CONFIG`; multi-config Visual Studio trees hold all configs side by side.
+
+-   **Two Ways to Use Clang on Windows:** The Visual Studio `-T ClangCL` toolset needs the optional "C++ Clang tools for Windows" VS component. Missing it fails at configure time with `MSB8020`. Ninja + LLVM's `clang-cl` works without that component or a developer shell, because clang-cl locates MSVC headers, libs and the Windows SDK itself. Ninja ships with Visual Studio and can be found with `vswhere`.
+
+-   **Baked Absolute Paths Block Relocation:** `config.h` bakes build-tree paths (`PAK_FILE`, `MODEL_DIR`, `CONFIG_DIR`) into the binary. That suits development but breaks any package moved to another directory or machine. The `VW_PORTABLE` CMake option switches desktop builds to resolve assets relative to the executable (`GetModuleFileNameW` / `/proc/self/exe`). `make package` always builds with it on.
+
+-   **Let CMake Find Runtime DLLs:** `$<TARGET_RUNTIME_DLLS:target>` (CMake 3.21+) installs exactly the DLLs a target links (GLFW, LZ4). `InstallRequiredSystemLibraries` adds the MSVC runtime. The Vulkan loader is deliberately not bundled, because it ships with the GPU driver.
+
+## 9. Android Build Pitfalls
+
+-   **Check What Git Actually Tracks:** `.gitignore` excluded `android/` and `gradle/`, so the Gradle project and wrapper existed only on one machine. Every build looked fine locally while a fresh clone could not build at all. `git check-ignore -v <path>` exposes this quickly.
+
+-   **No Machine-Specific Paths in Tracked Files:** The NDK path was hardcoded in `build.gradle` and in the vcpkg triplet. vcpkg triplets cannot receive CMake arguments, so Gradle now resolves the NDK from `sdk.dir`/`ANDROID_HOME` plus the pinned `ndkVersion`. It then writes the overlay triplet from a template to `build/android-triplets/`, outside the app build directory so `gradlew clean` does not delete it. `local.properties` stays untracked.
+
+-   **CMake Lists vs. Quoted Strings:** `set(VCPKG_CMAKE_CONFIGURE_OPTIONS "-DA=1 -DB=2")` passes one argument, so the NDK saw `ANDROID_PLATFORM="android-26 -DANDROID_ABI=arm64-v8a"`, failed to resolve the API level and could not find `libvulkan.so` ("Vulkan wasn't found"). Unquoted `set(VAR -DA=1 -DB=2)` makes a proper list.
+
+-   **The vcpkg Binary Cache Can Hide Broken Triplets:** The bad triplet went unnoticed because vcpkg restored previously built packages. Changing the triplet changed its ABI hash, forcing a real rebuild that exposed the bug. To validate a triplet change, build from a clean `.cxx/` directory.
+
+## 10. Header Order and clang-format
+
+-   **`IncludeBlocks: Regroup` Reorders Headers:** The project's clang-format merges and sorts include blocks. That silently breaks headers that are not self-contained:
+    -   `vulkan/vulkan_android.h` needs the core Vulkan types first. The fix is to define `VK_USE_PLATFORM_ANDROID_KHR` from CMake for Android and include only `<vulkan/vulkan.h>`.
+    -   `ImGuizmo.h` needs `imgui.h` first, and case-sensitive sorting puts `ImGuizmo.h` ahead of it. Guard such includes with `// clang-format off` / `// clang-format on`.
+
+-   **Unformatted Files Are Latent Build Breaks:** A file that has never been run through clang-format may compile only because of its current include order. The pre-commit hook formats staged files, so the first edit to such a file can break the build. Run `clang-format --dry-run --Werror` on files before relying on the hook.
+
+## 11. Debugging "Unlit" Assets
+
+-   **Inspect the Asset Before the Renderer:** "The helmet receives no light" was not a shader bug. The GLB's material had been re-exported with `baseColorFactor = [0,0,0,1]`, no base color, normal or metallic-roughness textures, and the metal-roughness image wired to the occlusion slot. Per glTF, a missing `metallicFactor` defaults to 1.0. A fully metallic surface with black albedo has F0 = 0, so every light contributes nothing and only the emissive texture shows.
+
+-   **The Loader Log Is a Cheap First Check:** The log line `1 material(s), 2 texture(s)` for a model known to use 5 textures pointed straight at the asset. Dumping the GLB's JSON chunk (12-byte header, then a length-prefixed JSON chunk) confirmed it in seconds.
+
+-   **Exporters Drop Material Wiring:** Blender's glTF exporter only exports what it can trace through the shader node graph. Check the material's node wiring before re-exporting a model.
+
+## 12. Lights as Scene Nodes
+
+-   **One Source of Truth:** Lights used to live in `LightEnvironment`, separate from the scene graph, and were edited only in the Lighting window. They are now a `LightComponent` on `SceneNode`. Each frame `SceneGraph::collect_lights()` rebuilds the directional/point/spot lists from node world transforms, so the hierarchy, gizmo, picking and save/load all treat lights like any other node. Ambient light stays global.
+
+-   **Transform Conventions:** A light's position is the node's world translation and its direction is the node's local -Z axis, matching glTF's `KHR_lights_punctual`. The direction comes from the normalized Z column, so node scale never skews it. `make_light_transform()` builds the inverse mapping, from a position and direction to a matrix.
+
+-   **Picking Without Geometry:** Light nodes have no mesh, so picking tests a small fixed-size box around the light's origin, using the same ray/AABB code as meshes.
+
+-   **Versioned Scene Files with Migration:** Scene version 2 stores lights per node. Version 1 files are migrated on load by converting their typed light arrays into root light nodes, so old scenes keep working without a separate conversion step.

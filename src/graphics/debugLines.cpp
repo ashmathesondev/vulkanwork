@@ -47,8 +47,7 @@ static void generate_directional(std::vector<LineVertex>& out,
 {
 	glm::vec3 color = light.color;
 	glm::vec3 dir = glm::normalize(light.direction);
-	glm::vec3 origin(0.0f, 5.0f,
-					 0.0f);	 // Place above world origin for visibility
+	glm::vec3 origin = light.position;
 	float shaftLen = 2.0f;
 	float headLen = 0.4f;
 	float headRadius = 0.15f;
