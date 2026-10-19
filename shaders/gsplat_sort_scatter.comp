@@ -1,0 +1,66 @@
+#version 450
+
+// =============================================================================
+// Gaussian Splat Radix Sort — Scatter pass
+// =============================================================================
+// Each workgroup processes the same chunk it handled in the histogram pass.
+// For each element, computes its global output position using the prefix table
+// and scatters keys+values to the output (ping) buffer.
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform FrameUBO {
+    mat4 view; mat4 proj; mat4 invProj;
+    vec3 cameraPos; uint lightCount;
+    vec3 ambientColor; uint tileCountX; uint tileCountY;
+    uint screenWidth; uint screenHeight;
+} frame;
+
+layout(std430, set = 1, binding = 0) readonly buffer SplatBuffer   { float splatData[]; };
+layout(std430, set = 1, binding = 1) readonly buffer PreprocBuffer { float preprocData[]; };
+layout(std430, set = 1, binding = 2) buffer KeysA { uint keysA[]; };
+layout(std430, set = 1, binding = 3) buffer KeysB { uint keysB[]; };
+layout(std430, set = 1, binding = 4) buffer ValsA { uint valsA[]; };
+layout(std430, set = 1, binding = 5) buffer ValsB { uint valsB[]; };
+layout(std430, set = 1, binding = 6) readonly buffer HistogramBuffer { uint histogram[]; };
+layout(std430, set = 1, binding = 7) buffer PrefixBuffer { uint prefix[]; };
+
+layout(push_constant) uniform PC {
+    uint N;
+    uint shift;
+    uint ping;    // 0 = read A, write B;  1 = read B, write A
+    uint numWG;
+} push;
+
+void main()
+{
+    uint lid   = gl_LocalInvocationID.x;
+    uint wgID  = gl_WorkGroupID.x;
+    uint N     = push.N;
+    uint numWG = push.numWG;
+
+    uint chunkSize = (N + numWG - 1u) / numWG;
+    uint start     = wgID * chunkSize;
+    uint end       = min(start + chunkSize, N);
+
+    // Process elements sequentially per thread stripe to preserve relative order
+    // within each digit bucket (stability).
+    for (uint i = start + lid; i < end; i += 256u) {
+        uint key = (push.ping == 0u) ? keysA[i] : keysB[i];
+        uint val = (push.ping == 0u) ? valsA[i] : valsB[i];
+
+        uint digit      = (key >> push.shift) & 0xFFu;
+        // Claim the next output slot for this digit in this workgroup.
+        // prefix[digit * numWG + wgID] starts at the exclusive prefix for this
+        // (digit, workgroup) pair and is incremented atomically to track scatter.
+        uint outPos = atomicAdd(prefix[digit * numWG + wgID], 1u);
+
+        if (push.ping == 0u) {
+            keysB[outPos] = key;
+            valsB[outPos] = val;
+        } else {
+            keysA[outPos] = key;
+            valsA[outPos] = val;
+        }
+    }
+}

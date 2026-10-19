@@ -3,12 +3,24 @@
   "version": "0.1.0",
   "dependencies": [
     "vulkan-headers",
-    "vulkan-loader",
-    "glfw3",
+    {
+      "name": "vulkan-loader",
+      "platform": "!android"
+    },
+    {
+      "name": "glfw3",
+      "platform": "!android"
+    },
     "glm",
     {
       "name": "imgui",
-      "features": ["glfw-binding", "vulkan-binding"]
+      "features": ["glfw-binding", "vulkan-binding"],
+      "platform": "!android"
+    },
+    {
+      "name": "imgui",
+      "features": ["android-binding", "vulkan-binding"],
+      "platform": "android"
     },
     "stb",
     "lz4",

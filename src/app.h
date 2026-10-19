@@ -1,8 +1,8 @@
 #pragma once
 
-#include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
 
+#include <optional>
 #include <string>
 
 #include "editor/debugWindow.h"
@@ -10,8 +10,10 @@
 #include "editor/sceneGraph.h"
 #include "editor/selection.h"
 #include "graphics/camera.h"
+#include "graphics/gaussianSplats.h"
 #include "graphics/light.h"
 #include "graphics/renderer.h"
+#include "platform/platform.h"
 
 struct App
 {
@@ -19,7 +21,7 @@ struct App
 	static constexpr int INITIAL_HEIGHT = 720;
 
 	// Window
-	GLFWwindow* window = nullptr;
+	PlatformWindow* window = nullptr;
 
 	// Renderer
 	Renderer renderer;
@@ -59,6 +61,9 @@ struct App
 	// Import dialog state
 	bool showImportDialog_ = false;
 
+	// Gaussian Splat import dialog state
+	bool showSplatImportDialog_ = false;
+
 	// --- Public API ----------------------------------------------------------
 	void run();
 
@@ -72,6 +77,10 @@ struct App
 	void build_scene_graph();
 	void save_window_config();
 	bool load_window_config(int& x, int& y, int& w, int& h);
+
+	// Gaussian Splat system
+	std::optional<GaussianSplatSystem> splatSystem_;
+	void do_load_splat(const std::string& path);
 
 	// Scene file operations
 	bool showLoadDialog_ = false;

@@ -8,6 +8,7 @@ namespace pak
 
 inline constexpr uint32_t MAGIC = 0x50414B31;  // "PAK1"
 inline constexpr uint32_t VERSION = 1;
+inline constexpr uint32_t FLAG_UNCOMPRESSED = 1u << 0;
 inline constexpr size_t MAX_ASSET_NAME = 256;
 
 struct FileHeader
@@ -15,7 +16,7 @@ struct FileHeader
 	uint32_t magic;	   // MAGIC
 	uint32_t version;  // VERSION
 	uint32_t entry_count;
-	uint32_t flags;		  // reserved, 0
+	uint32_t flags;
 	uint64_t toc_offset;  // always 24 for v1
 };
 static_assert(sizeof(FileHeader) == 24);

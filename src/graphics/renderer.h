@@ -1,8 +1,5 @@
 #pragma once
 
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-
 #include <array>
 #include <glm/glm.hpp>
 #include <optional>
@@ -13,10 +10,12 @@
 #include "material.h"
 #include "mesh.h"
 #include "pak/packfile.h"
+#include "platform/platform.h"
 #include "scene.h"
 #include "texture.h"
 
 struct Camera;
+class GaussianSplatSystem;
 
 // =============================================================================
 // Forward+ rendering constants
@@ -35,7 +34,7 @@ struct Renderer
 	static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
 	// Lifecycle
-	void init(GLFWwindow* window, const std::string& modelPath);
+	void init(PlatformWindow* window, const std::string& modelPath);
 	void cleanup();
 
 	// Per-frame rendering
@@ -64,6 +63,12 @@ struct Renderer
 	VkQueue vk_graphics_queue() const;
 	uint32_t swapchain_image_count() const;
 	VkRenderPass vk_render_pass() const;
+	VkCommandPool vk_command_pool_() const { return commandPool_; }
+
+	// Gaussian Splat System (optional, set by App)
+	void set_splat_system(GaussianSplatSystem* s) { splatSystem_ = s; }
+	VkDescriptorSetLayout frame_set_layout() const { return frameSetLayout_; }
+	pak::PackFile& pack_file() { return *packFile_; }
 
 	// Heatmap toggle (controlled from ImGui)
 	bool showHeatmap_ = false;
@@ -90,11 +95,14 @@ struct Renderer
 	void delete_mesh(uint32_t meshIdx);
 
    private:
+	// Gaussian splat system (non-owning pointer, set by App)
+	GaussianSplatSystem* splatSystem_ = nullptr;
+
 	// Asset pack
 	std::optional<pak::PackFile> packFile_;
 
 	// Window (non-owning)
-	GLFWwindow* window_ = nullptr;
+	PlatformWindow* window_ = nullptr;
 
 	// Core Vulkan
 	VkInstance instance_ = VK_NULL_HANDLE;

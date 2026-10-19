@@ -24,6 +24,7 @@ class PackFile
    private:
 	std::filesystem::path path_;
 	std::unordered_map<std::string, TocEntry> toc_;
+	bool uncompressed_ = false;
 };
 
 }  // namespace pak

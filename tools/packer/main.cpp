@@ -79,6 +79,11 @@ static int list_pak(const std::string& pak_path)
 					 header.version, pak::VERSION);
 		return 1;
 	}
+	if ((header.flags & ~pak::FLAG_UNCOMPRESSED) != 0)
+	{
+		std::fprintf(stderr, "Error: unsupported flags 0x%08X\n", header.flags);
+		return 1;
+	}
 
 	std::printf("PAK1 v%u — %u entries\n\n", header.version,
 				header.entry_count);
@@ -158,9 +163,15 @@ static int validate_pak(const std::string& pak_path)
 					 header.version, pak::VERSION);
 		return 1;
 	}
+	if ((header.flags & ~pak::FLAG_UNCOMPRESSED) != 0)
+	{
+		std::fprintf(stderr, "FAIL: unsupported flags 0x%08X\n", header.flags);
+		return 1;
+	}
+	bool uncompressed = (header.flags & pak::FLAG_UNCOMPRESSED) != 0;
 
-	std::printf("Header OK (PAK1 v%u, %u entries)\n", header.version,
-				header.entry_count);
+	std::printf("Header OK (PAK1 v%u, %u entries%s)\n", header.version,
+				header.entry_count, uncompressed ? ", uncompressed" : "");
 
 	f.seekg(static_cast<std::streamoff>(header.toc_offset));
 
@@ -203,6 +214,22 @@ static int validate_pak(const std::string& pak_path)
 			std::fprintf(stderr, "  FAIL: %s — cannot read compressed data\n",
 						 entry.name);
 			++failures;
+			continue;
+		}
+
+		if (uncompressed)
+		{
+			if (entry.compressed_size != entry.original_size)
+			{
+				std::fprintf(stderr,
+							 "  FAIL: %s — uncompressed size mismatch in TOC\n",
+							 entry.name);
+				++failures;
+			}
+			else
+			{
+				std::printf("  OK: %s\n", entry.name);
+			}
 			continue;
 		}
 

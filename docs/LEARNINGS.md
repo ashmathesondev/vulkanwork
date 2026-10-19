@@ -7,6 +7,7 @@ This document summarizes the key architectural decisions, implementation pattern
 -   [Vulkan Tutorial](https://vulkan-tutorial.com/)
 -   [Vulkan API Documentation](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkInstance.html)
 -   [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)
+-   [Vulkan Game Tutorial](https://docs.vulkan.org/tutorial/latest/Building_a_Simple_Engine/introduction.html)
 
 ## 1. Project Structure & Build System
 

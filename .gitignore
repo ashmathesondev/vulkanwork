@@ -10,3 +10,7 @@ imgui.ini
 *.obj
 *.pdb
 *.ilk
+.gradle
+android
+android/app
+gradle
