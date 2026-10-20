@@ -84,6 +84,10 @@ configure_file(src/config.h.in ${CMAKE_BINARY_DIR}/generated/config.h @ONLY)
 # --- Executable --------------------------------------------------------------
 file(GLOB_RECURSE SRC_FILES "src/*.cpp")
 file(GLOB_RECURSE HEADER_FILES "src/*.h" "src/*.hpp")
+# src/pak/ is built once as the `packfile` library and linked below. Compiling
+# it into the executable as well defines every PackFile symbol twice, which
+# lld-link (VS ClangCL toolset) rejects as duplicate symbols.
+list(FILTER SRC_FILES EXCLUDE REGEX "/src/pak/")
 
 source_group(TREE ${CMAKE_SOURCE_DIR}/src PREFIX "Source Files" FILES ${SRC_FILES})
 source_group(TREE ${CMAKE_SOURCE_DIR}/src PREFIX "Header Files" FILES ${HEADER_FILES})
