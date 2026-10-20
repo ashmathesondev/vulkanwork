@@ -61,6 +61,8 @@ This project features a complete, end-to-end asset pipeline, which is a major le
 
 -   **File Dialog Settings Matter:** ImGuiFileDialog defaults to no flags when given a config. Save dialogs need `ImGuiFileDialogFlags_ConfirmOverwrite`, and both load and save should be `Modal`, with a minimum size passed to `Display()`.
 
+-   **Global Hotkeys Must Yield to Text Input:** Escape used to quit the app unconditionally, so cancelling a rename with Escape would have closed the editor. Checking `io.WantCaptureKeyboard` is not enough on its own, because `key_down` is level-triggered: the text field closes on the press frame and the still-held key quits on the next one. Quit only on the press *edge*, and only when ImGui is not capturing the keyboard.
+
 -   **Validation Layers are Essential:** The setup of the `VkDebugUtilsMessengerEXT` in the `Renderer` is non-negotiable for serious Vulkan development. The validation layers are the single most important tool for catching errors, and the detailed feedback they provide is invaluable.
 
 ## 6. Scene File Format & Multi-Model Scenes

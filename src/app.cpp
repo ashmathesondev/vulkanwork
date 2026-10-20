@@ -133,8 +133,10 @@ void App::main_loop()
 			ImGui::EndMainMenuBar();
 		}
 
-		// Ctrl+S shortcut
-		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
+		// Ctrl+S shortcut. Ignored while flying the camera: Ctrl (down) + S
+		// (back) is a normal movement combination there.
+		if (!mouseCaptured && ImGui::GetIO().KeyCtrl &&
+			ImGui::IsKeyPressed(ImGuiKey_S))
 		{
 			if (currentScenePath.empty())
 				showSaveDialog_ = true;
@@ -300,10 +302,15 @@ void App::main_loop()
 
 void App::process_input()
 {
-	if (platform::key_down(window, platform::Key::Escape))
-		platform::request_close(window);
-
 	ImGuiIO& io = ImGui::GetIO();
+
+	// Quit on an Escape *press* that ImGui is not using. Escape also cancels
+	// text edits and dialogs; reacting to the held key would quit on the
+	// frame after the edit closed.
+	bool escapeDown = platform::key_down(window, platform::Key::Escape);
+	if (escapeDown && !escapeWasDown && !io.WantCaptureKeyboard)
+		platform::request_close(window);
+	escapeWasDown = escapeDown;
 
 	// --- Mouse look ----------------------------------------------------------
 	bool wantCapture =
@@ -338,7 +345,9 @@ void App::process_input()
 		lastMouseX = mx;
 		lastMouseY = my;
 
-		camera.yaw += xoff;
+		// Keep yaw in [-180, 180): unbounded growth makes saved scenes hard
+		// to read and slowly loses float precision.
+		camera.yaw = std::remainder(camera.yaw + xoff, 360.0f);
 		camera.pitch += yoff;
 		if (camera.pitch > 89.0f) camera.pitch = 89.0f;
 		if (camera.pitch < -89.0f) camera.pitch = -89.0f;
@@ -542,6 +551,10 @@ void App::do_save_scene(const std::string& path)
 	data.modelPath = modelPath;
 	data.sceneGraph = sceneGraph;
 	data.camera = camera;
+	LOG_INFO(
+		"Saving camera: pos (%.3f, %.3f, %.3f) yaw %.2f pitch %.2f fov %.1f",
+		camera.position.x, camera.position.y, camera.position.z, camera.yaw,
+		camera.pitch, camera.fov);
 	data.lights = lights;
 	if (save_scene_file(path, data))
 	{
@@ -623,6 +636,10 @@ void App::do_load_scene(const std::string& path)
 
 	sceneGraph = std::move(data.sceneGraph);
 	camera = data.camera;
+	LOG_INFO(
+		"Restored camera: pos (%.3f, %.3f, %.3f) yaw %.2f pitch %.2f fov %.1f",
+		camera.position.x, camera.position.y, camera.position.z, camera.yaw,
+		camera.pitch, camera.fov);
 	lights = data.lights;
 	modelPath = data.modelPath;
 

@@ -9,6 +9,8 @@
 // clang-format on
 
 #include <algorithm>
+#include <cfloat>
+#include <cstring>
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <string>
@@ -31,22 +33,50 @@ static void keep_below_menu_bar()
 		ImGui::SetWindowPos(ImVec2(pos.x, vp->WorkPos.y));
 }
 
+// Copy `name` into a fixed ImGui text buffer (truncating if needed).
+template <size_t N>
+static void fill_buffer(std::array<char, N>& buf, const std::string& name)
+{
+	size_t n = std::min(name.size(), N - 1);
+	std::memcpy(buf.data(), name.data(), n);
+	buf[n] = '\0';
+}
+
+// Apply an edited name. Surrounding whitespace is trimmed; an empty result
+// keeps the old name so nodes can never become unlabeled.
+static void commit_name(SceneNode& node, const char* text)
+{
+	std::string s(text);
+	size_t b = s.find_first_not_of(" \t");
+	size_t e = s.find_last_not_of(" \t");
+	if (b == std::string::npos) return;
+	node.name = s.substr(b, e - b + 1);
+}
+
+void DebugWindow::begin_rename(const SceneGraph& sceneGraph, uint32_t nodeIdx)
+{
+	if (nodeIdx >= sceneGraph.nodes.size()) return;
+	renamingNode_ = nodeIdx;
+	renameFocusPending_ = true;
+	fill_buffer(renameBuf_, sceneGraph.nodes[nodeIdx].name);
+}
+
 // Recursive helper to draw scene hierarchy tree.
 // reveal[i] forces node i open (ancestors of a newly selected node);
 // scrollToSelected scrolls the selected row into view.
-static void draw_node_tree(SceneGraph& sceneGraph, uint32_t nodeIdx,
-						   Selection& selection,
-						   const std::vector<bool>& reveal,
-						   bool scrollToSelected)
+void DebugWindow::draw_node_tree(SceneGraph& sceneGraph, uint32_t nodeIdx,
+								 Selection& selection,
+								 const std::vector<bool>& reveal,
+								 bool scrollToSelected)
 {
 	auto& node = sceneGraph.nodes[nodeIdx];
 	bool isSelected = selection.selectedNode.has_value() &&
 					  selection.selectedNode.value() == nodeIdx;
 	bool hasChildren = !node.children.empty();
 
-	ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
-							   ImGuiTreeNodeFlags_OpenOnDoubleClick |
-							   ImGuiTreeNodeFlags_SpanAvailWidth;
+	// Double-click renames, so only the arrow toggles open/closed.
+	ImGuiTreeNodeFlags flags =
+		ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
 	if (isSelected) flags |= ImGuiTreeNodeFlags_Selected;
 	if (hasChildren)
 		flags |= ImGuiTreeNodeFlags_DefaultOpen;
@@ -62,14 +92,61 @@ static void draw_node_tree(SceneGraph& sceneGraph, uint32_t nodeIdx,
 			std::string("  [") + light_type_name(node.light->type) + " light]";
 	else if (node.splat.has_value())
 		label += "  [Gaussian splat]";
-	bool open = ImGui::TreeNodeEx(
-		reinterpret_cast<void*>(static_cast<uintptr_t>(nodeIdx)), flags, "%s",
-		label.c_str());
+	bool renaming = renamingNode_.has_value() && *renamingNode_ == nodeIdx;
+	void* id = reinterpret_cast<void*>(static_cast<uintptr_t>(nodeIdx));
+	bool open =
+		ImGui::TreeNodeEx(id, flags, "%s", renaming ? "" : label.c_str());
 
 	if (isSelected && scrollToSelected) ImGui::SetScrollHereY(0.5f);
 
-	if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
-		selection.selectedNode = nodeIdx;
+	if (!renaming)
+	{
+		if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
+			selection.selectedNode = nodeIdx;
+		if (ImGui::IsItemHovered() &&
+			ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
+			!ImGui::IsItemToggledOpen())
+		{
+			selection.selectedNode = nodeIdx;
+			begin_rename(sceneGraph, nodeIdx);
+		}
+
+		if (ImGui::BeginPopupContextItem())
+		{
+			selection.selectedNode = nodeIdx;
+			if (ImGui::MenuItem("Rename", "F2"))
+				begin_rename(sceneGraph, nodeIdx);
+			if (ImGui::MenuItem("Delete", "Del")) deleteRequested = true;
+			ImGui::EndPopup();
+		}
+	}
+	else
+	{
+		// Inline editor on the same row. Enter or clicking away commits;
+		// Escape cancels.
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (renameFocusPending_)
+		{
+			ImGui::SetKeyboardFocusHere();
+			renameFocusPending_ = false;
+		}
+		bool enter =
+			ImGui::InputText("##rename", renameBuf_.data(), renameBuf_.size(),
+							 ImGuiInputTextFlags_EnterReturnsTrue |
+								 ImGuiInputTextFlags_AutoSelectAll);
+		if (enter)
+		{
+			commit_name(node, renameBuf_.data());
+			renamingNode_.reset();
+		}
+		else if (ImGui::IsItemDeactivated())
+		{
+			if (!ImGui::IsKeyPressed(ImGuiKey_Escape))
+				commit_name(node, renameBuf_.data());
+			renamingNode_.reset();
+		}
+	}
 
 	if (open)
 	{
@@ -319,7 +396,14 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 					  ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeY);
 	for (uint32_t root : sceneGraph.roots)
 		draw_node_tree(sceneGraph, root, selection, reveal, selectionChanged);
+	// F2 renames the selected node while the tree has focus
+	if (!renamingNode_.has_value() && selection.selectedNode.has_value() &&
+		ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_F2))
+		begin_rename(sceneGraph, *selection.selectedNode);
 	ImGui::EndChild();
+	// A rename target that vanished (node deleted) must not linger
+	if (renamingNode_.has_value() && *renamingNode_ >= sceneGraph.nodes.size())
+		renamingNode_.reset();
 
 	ImGui::Separator();
 
@@ -329,7 +413,14 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 		if (nodeIdx < sceneGraph.nodes.size())
 		{
 			auto& node = sceneGraph.nodes[nodeIdx];
-			ImGui::Text("Selected: %s", node.name.c_str());
+			// Editable name. Refresh from the node unless the user is typing.
+			if (nameFieldNode_ != nodeIdx || !nameFieldActive_)
+				fill_buffer(nameBuf_, node.name);
+			nameFieldNode_ = nodeIdx;
+			ImGui::InputText("Name", nameBuf_.data(), nameBuf_.size());
+			nameFieldActive_ = ImGui::IsItemActive();
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				commit_name(node, nameBuf_.data());
 			if (node.parent.has_value() &&
 				*node.parent < sceneGraph.nodes.size())
 				ImGui::TextDisabled(

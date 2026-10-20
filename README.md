@@ -38,13 +38,15 @@ See [BUILDING.md](BUILDING.md) for prerequisites, every Makefile option, packagi
 | Left-click | Select a mesh or light in the viewport |
 | W / E / R (mouse released) | Gizmo mode: translate / rotate / scale |
 | Delete | Delete the selected node |
+| F2 / double-click a node | Rename it in the Scene Hierarchy (Enter or click away to apply, Escape to cancel) |
+| Right-click a node | Context menu: Rename, Delete |
 | Ctrl+S | Save the scene |
 | Escape | Quit |
 
 ## Using the Editor
 
 - **File menu:** New Scene, Load Scene, Save Scene, Save Scene As, Import Mesh (`.gltf`/`.glb`), and Import Gaussian Splat (`.ply`).
-- **Scene Hierarchy:** lists every node. Select one to edit it there:
+- **Scene Hierarchy:** shows the scene as a tree; imported models keep their node hierarchy. Rename any node inline or with the inspector's Name field. Select a node to edit it there:
   - **Lights:** position, rotation, type, color, intensity, radius and cone angles.
   - **Splats:** switch between Gaussian and Points rendering and set the point size.
   - **"Import Mesh..." / "Import Splat..."** buttons open the matching import dialogs.
