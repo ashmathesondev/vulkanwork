@@ -8,6 +8,15 @@
 - A C++20 compiler: MSVC or Clang on Windows, GCC or Clang on Linux
 - Windows Clang builds need [LLVM](https://llvm.org/) `clang-cl` on `PATH` and Ninja. The VS-bundled Ninja is found automatically. `VS=22`/`VS=26` Clang builds need the "C++ Clang tools for Windows" VS component instead
 - Vulkan-capable GPU and drivers
+- Linux (Ubuntu/Debian) system packages. vcpkg needs the X11 headers for GLFW, and autotools to build the X11/xcb ports from source:
+
+  ```sh
+  sudo apt install build-essential pkg-config \
+      libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+      autoconf autoconf-archive automake libtool
+  ```
+
+  Install the Vulkan SDK (or `libvulkan-dev` plus `glslc`) as well.
 
 ## Quick Start
 
