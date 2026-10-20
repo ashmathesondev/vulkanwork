@@ -8,6 +8,15 @@
 - A C++20 compiler: MSVC or Clang on Windows, GCC or Clang on Linux
 - Windows Clang builds need [LLVM](https://llvm.org/) `clang-cl` on `PATH` and Ninja. The VS-bundled Ninja is found automatically. `VS=22`/`VS=26` Clang builds need the "C++ Clang tools for Windows" VS component instead
 - Vulkan-capable GPU and drivers
+- Linux (Ubuntu/Debian) system packages. vcpkg needs the X11 headers for GLFW, and autotools to build the X11/xcb ports from source:
+
+  ```sh
+  sudo apt install build-essential pkg-config \
+      libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+      autoconf autoconf-archive automake libtool
+  ```
+
+  Install the Vulkan SDK (or `libvulkan-dev` plus `glslc`) as well.
 
 ## Quick Start
 
@@ -95,6 +104,49 @@ make build
 ```powershell
 make build VCPKG_ROOT=E:/vcpkg  # inline override
 ```
+
+## CMake Presets (VS Code, Visual Studio, CLI)
+
+`CMakePresets.json` defines Windows presets that already include the vcpkg toolchain and triplet:
+
+| Configure preset | Generator | Compiler | Needs |
+|---|---|---|---|
+| `vs2022-msvc-debug` | Visual Studio 2022 | MSVC | VS 2022 C++ workload |
+| `clang-cl-debug` / `clang-cl-release` | Ninja | `clang-cl` | `ninja` and `clang-cl` on `PATH` |
+| `vs2026-clangcl` | Visual Studio 2026 | ClangCL toolset | VS component "MSBuild support for LLVM (clang-cl) toolset" |
+
+```powershell
+cmake --preset clang-cl-debug
+cmake --build --preset clang-cl-debug
+```
+
+In VS Code, set `"cmake.useCMakePresets": "always"` and pick the preset in the CMake Tools status bar. Avoid CMake Tools kits for this project; a kit configures without the vcpkg toolchain.
+
+The Clang presets use whichever `clang-cl` is first on `PATH`. To pin a specific one, such as the copy that ships with Visual Studio, put an override in an untracked `CMakeUserPresets.json`:
+
+```json
+{
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "my-clang",
+            "inherits": "clang-cl-debug",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "C:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/Llvm/x64/bin/clang-cl.exe",
+                "CMAKE_CXX_COMPILER": "C:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/Llvm/x64/bin/clang-cl.exe"
+            }
+        }
+    ]
+}
+```
+
+### Clang troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `MSB8020: The build tools for ClangCL (Platform Toolset = 'ClangCL') cannot be found` | The Visual Studio generator with `-T ClangCL` needs the MSBuild ClangCL toolset. Having the Clang compiler installed is not enough. Either install "MSBuild support for LLVM (clang-cl) toolset" (`Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset`) in the VS Installer, or use the `clang-cl-*` Ninja presets or `make build COMPILER=clang`, which do not need it. |
+| `CMake was unable to find a build program corresponding to "Ninja"` | Put Ninja on `PATH` (`scoop install ninja`, `winget install Ninja-build.Ninja`, or use a Developer PowerShell, which includes the VS-bundled Ninja). The Makefile finds the VS-bundled Ninja automatically. |
+| `Could not find a package configuration file provided by "glfw3"` | Configured without the vcpkg toolchain, typically through a CMake Tools kit. Use a preset, or pass `-DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake`. |
 
 ## Opening in Visual Studio
 

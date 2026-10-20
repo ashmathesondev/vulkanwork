@@ -68,9 +68,12 @@ jobs:
           sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list \
             https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
           sudo apt-get update
+          # autoconf/automake/libtool: vcpkg builds the X11/xcb ports
+          # (e.g. pthread-stubs) from source with autotools.
           sudo apt-get install -y vulkan-sdk \
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
-            pkg-config
+            pkg-config build-essential \
+            autoconf autoconf-archive automake libtool
 
       # ── vcpkg cache ──────────────────────────────────────────────────
       - name: Cache vcpkg packages
