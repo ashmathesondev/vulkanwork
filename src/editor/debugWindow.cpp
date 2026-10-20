@@ -12,6 +12,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <string>
+#include <vector>
 
 #include "editor/gizmo.h"
 #include "editor/sceneGraph.h"
@@ -30,19 +31,30 @@ static void keep_below_menu_bar()
 		ImGui::SetWindowPos(ImVec2(pos.x, vp->WorkPos.y));
 }
 
-// Recursive helper to draw scene hierarchy tree
+// Recursive helper to draw scene hierarchy tree.
+// reveal[i] forces node i open (ancestors of a newly selected node);
+// scrollToSelected scrolls the selected row into view.
 static void draw_node_tree(SceneGraph& sceneGraph, uint32_t nodeIdx,
-						   Selection& selection)
+						   Selection& selection,
+						   const std::vector<bool>& reveal,
+						   bool scrollToSelected)
 {
 	auto& node = sceneGraph.nodes[nodeIdx];
 	bool isSelected = selection.selectedNode.has_value() &&
 					  selection.selectedNode.value() == nodeIdx;
 	bool hasChildren = !node.children.empty();
 
-	ImGuiTreeNodeFlags flags =
-		ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+	ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
+							   ImGuiTreeNodeFlags_OpenOnDoubleClick |
+							   ImGuiTreeNodeFlags_SpanAvailWidth;
 	if (isSelected) flags |= ImGuiTreeNodeFlags_Selected;
-	if (!hasChildren) flags |= ImGuiTreeNodeFlags_Leaf;
+	if (hasChildren)
+		flags |= ImGuiTreeNodeFlags_DefaultOpen;
+	else
+		flags |= ImGuiTreeNodeFlags_Leaf;
+
+	if (nodeIdx < reveal.size() && reveal[nodeIdx])
+		ImGui::SetNextItemOpen(true);
 
 	std::string label = node.name;
 	if (node.light.has_value())
@@ -54,13 +66,16 @@ static void draw_node_tree(SceneGraph& sceneGraph, uint32_t nodeIdx,
 		reinterpret_cast<void*>(static_cast<uintptr_t>(nodeIdx)), flags, "%s",
 		label.c_str());
 
+	if (isSelected && scrollToSelected) ImGui::SetScrollHereY(0.5f);
+
 	if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
 		selection.selectedNode = nodeIdx;
 
 	if (open)
 	{
 		for (uint32_t child : node.children)
-			draw_node_tree(sceneGraph, child, selection);
+			draw_node_tree(sceneGraph, child, selection, reveal,
+						   scrollToSelected);
 		ImGui::TreePop();
 	}
 }
@@ -282,8 +297,29 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 
 	ImGui::Separator();
 
+	// When the selection changed outside the tree (viewport pick, import),
+	// open every ancestor so the selected node is visible.
+	bool selectionChanged = selection.selectedNode != lastSelected_;
+	lastSelected_ = selection.selectedNode;
+	std::vector<bool> reveal(sceneGraph.nodes.size(), false);
+	if (selectionChanged && selection.selectedNode.has_value() &&
+		*selection.selectedNode < sceneGraph.nodes.size())
+	{
+		auto p = sceneGraph.nodes[*selection.selectedNode].parent;
+		while (p.has_value() && *p < sceneGraph.nodes.size() && !reveal[*p])
+		{
+			reveal[*p] = true;
+			p = sceneGraph.nodes[*p].parent;
+		}
+	}
+
+	// Tree in its own scrollable, resizable region so deep hierarchies do
+	// not push the inspector below out of view.
+	ImGui::BeginChild("##SceneTree", ImVec2(0.0f, 220.0f),
+					  ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeY);
 	for (uint32_t root : sceneGraph.roots)
-		draw_node_tree(sceneGraph, root, selection);
+		draw_node_tree(sceneGraph, root, selection, reveal, selectionChanged);
+	ImGui::EndChild();
 
 	ImGui::Separator();
 
@@ -294,6 +330,12 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 		{
 			auto& node = sceneGraph.nodes[nodeIdx];
 			ImGui::Text("Selected: %s", node.name.c_str());
+			if (node.parent.has_value() &&
+				*node.parent < sceneGraph.nodes.size())
+				ImGui::TextDisabled(
+					"Parent: %s", sceneGraph.nodes[*node.parent].name.c_str());
+			if (!node.children.empty())
+				ImGui::TextDisabled("Children: %zu", node.children.size());
 
 			if (ImGui::Button("Deselect")) selection.selectedNode.reset();
 
@@ -337,8 +379,9 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 				}
 			}
 
-			// Decompose and display transform
+			// Decompose and display transform (relative to the parent node)
 			ImGui::Separator();
+			ImGui::TextDisabled("Local transform (relative to parent)");
 			float matrixTranslation[3], matrixRotation[3], matrixScale[3];
 			ImGuizmo::DecomposeMatrixToComponents(
 				glm::value_ptr(node.localTransform), matrixTranslation,

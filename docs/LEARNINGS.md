@@ -73,6 +73,10 @@ This project features a complete, end-to-end asset pipeline, which is a major le
 
 -   **Backward Compatibility via Fallback:** The loader can support old-format scene files (single root `modelPath`, global `meshIndex` per node) by detecting the absence of the new per-node `modelPath` field and falling back to the root value. This prevents hard breaks when loading scenes saved before the format change.
 
+-   **Keep the Source Hierarchy:** Imports used to flatten a glTF into one root node per mesh with baked world transforms, so a 400-node model became 400 unrelated roots and moving a parent part was impossible. The loader now also returns the node tree (`ImportedNode`: local transform, parent/children, owned meshes). `App::add_imported_hierarchy()` rebuilds it as scene nodes, with one child node per primitive when a glTF node draws several, because a `SceneNode` holds one mesh. The flat mesh order is unchanged, so `meshIndexInModel` in saved scenes still resolves. A load-time comparison confirmed the rebuilt world transforms match the old baked ones exactly on Buggy, GearboxAssy and Duck.
+
+-   **Rolling FPS Averages Lie Right After a Stall:** ImGui's `io.Framerate` averages recent frames, so a reading taken within a second of a long load shows an inflated frame time. Wait a few seconds before comparing numbers.
+
 -   **Built-in Meshes Need a Source Identity Too:** The renderer always injects a built-in cube into every scene (via `add_cube_to_scene`). This mesh has no source file, so it uses an empty `sourcePath`. On load, `load_scene_empty()` is called first, placing the cube at a known global index (0), and `modelOffsets["internal://cube"] = 0` establishes its identity in the offset map.
 
 ## 7. Logging & Observability

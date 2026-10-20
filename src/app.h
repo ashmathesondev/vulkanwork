@@ -75,6 +75,8 @@ struct App
 	void init_imgui();
 	void process_input();
 	void build_scene_graph();
+	std::vector<uint32_t> add_imported_hierarchy(
+		const std::vector<ImportedNode>& nodes);
 	void add_default_lights();
 	void save_window_config();
 	bool load_window_config(int& x, int& y, int& w, int& h);

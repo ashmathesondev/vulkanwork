@@ -91,7 +91,16 @@ struct Renderer
 	void load_scene(const std::string& modelPath);
 	void unload_scene();
 	void load_scene_empty();
-	void import_gltf(const std::string& path);
+
+	// Node hierarchy of the model passed to init()/load_scene().
+	// ImportedNode::meshes are indices into meshes().
+	const std::vector<ImportedNode>& initial_hierarchy() const
+	{
+		return initialHierarchy_;
+	}
+	// Appends the model's meshes/materials/textures and returns its node
+	// hierarchy, with ImportedNode::meshes as indices into meshes().
+	std::vector<ImportedNode> import_gltf(const std::string& path);
 	void delete_mesh(uint32_t meshIdx);
 
    private:
@@ -189,6 +198,7 @@ struct Renderer
 
 	// Scene data (unified CPU+GPU)
 	std::vector<Mesh> meshes_;
+	std::vector<ImportedNode> initialHierarchy_;
 	std::vector<Texture> textures_;
 	std::vector<Material> materials_;
 

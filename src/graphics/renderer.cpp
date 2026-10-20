@@ -1604,9 +1604,11 @@ void Renderer::load_scene(const std::string& modelPath)
 	// Add the cube (BlueGrid texture + material + mesh)
 	add_cube_to_scene(scene);
 
-	// Move scene data into renderer members
+	// Move scene data into renderer members. glTF meshes come first, so the
+	// hierarchy's mesh indices are already global.
 	textures_ = std::move(scene.textures);
 	meshes_ = std::move(scene.meshes);
+	initialHierarchy_ = std::move(scene.nodes);
 
 	// Create material descriptors (includes the cube's material)
 	create_material_descriptor_pool(
@@ -1628,6 +1630,7 @@ void Renderer::unload_scene()
 		vkFreeMemory(device_, m.indexMemory, nullptr);
 	}
 	meshes_.clear();
+	initialHierarchy_.clear();
 
 	// Free material factor buffers
 	for (auto& m : materials_)
@@ -1671,7 +1674,7 @@ void Renderer::load_scene_empty()
 // Import / Delete / Rebuild helpers
 // =============================================================================
 
-void Renderer::import_gltf(const std::string& path)
+std::vector<ImportedNode> Renderer::import_gltf(const std::string& path)
 {
 	vkDeviceWaitIdle(device_);
 
@@ -1679,6 +1682,11 @@ void Renderer::import_gltf(const std::string& path)
 
 	uint32_t texOffset = static_cast<uint32_t>(textures_.size());
 	uint32_t matOffset = static_cast<uint32_t>(materials_.size());
+	uint32_t meshOffset = static_cast<uint32_t>(meshes_.size());
+
+	// Remap the hierarchy's file-local mesh indices to global ones
+	for (auto& node : scene.nodes)
+		for (auto& mi : node.meshes) mi += meshOffset;
 
 	// Upload and append textures
 	for (auto& tex : scene.textures) upload_texture(tex);
@@ -1716,6 +1724,7 @@ void Renderer::import_gltf(const std::string& path)
 					  std::make_move_iterator(scene.materials.end()));
 
 	rebuild_material_descriptors();
+	return std::move(scene.nodes);
 }
 
 void Renderer::delete_mesh(uint32_t meshIdx)
