@@ -15,7 +15,7 @@ Layered structure: `main.cpp` → `App` → `Renderer` → graphics subsystems.
 - Set 1 (per-material): albedo, normal, metallic-roughness textures
 - Set 2: SSBO of per-tile culled light lists
 
-**Scene system** (`src/editor/`): SceneGraph owns hierarchy (mesh nodes and light nodes; lights are collected from node transforms each frame); SceneFile serializes/deserializes `.scene` files; Selection and Gizmo (ImGuizmo) handle editor interaction. Global mesh index tracked in `Renderer::meshes_` vector; each Mesh stores `sourcePath`/`sourceMeshIndex` for multi-model scenes.
+**Scene system** (`src/editor/`): SceneGraph owns hierarchy (imported models keep their glTF node tree; mesh, light and splat nodes; lights are collected from node transforms each frame); SceneFile serializes/deserializes `.scene` files; Selection and Gizmo (ImGuizmo) handle editor interaction. Global mesh index tracked in `Renderer::meshes_` vector; each Mesh stores `sourcePath`/`sourceMeshIndex` for multi-model scenes.
 
 **Asset pipeline:**
 1. GLSL shaders compiled to SPIR-V via glslc (CMake custom targets)

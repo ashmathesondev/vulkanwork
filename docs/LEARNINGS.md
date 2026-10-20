@@ -61,6 +61,8 @@ This project features a complete, end-to-end asset pipeline, which is a major le
 
 -   **File Dialog Settings Matter:** ImGuiFileDialog defaults to no flags when given a config. Save dialogs need `ImGuiFileDialogFlags_ConfirmOverwrite`, and both load and save should be `Modal`, with a minimum size passed to `Display()`.
 
+-   **Global Hotkeys Must Yield to Text Input:** Escape used to quit the app unconditionally, so cancelling a rename with Escape would have closed the editor. Checking `io.WantCaptureKeyboard` is not enough on its own, because `key_down` is level-triggered: the text field closes on the press frame and the still-held key quits on the next one. Quit only on the press *edge*, and only when ImGui is not capturing the keyboard.
+
 -   **Validation Layers are Essential:** The setup of the `VkDebugUtilsMessengerEXT` in the `Renderer` is non-negotiable for serious Vulkan development. The validation layers are the single most important tool for catching errors, and the detailed feedback they provide is invaluable.
 
 ## 6. Scene File Format & Multi-Model Scenes
@@ -72,6 +74,10 @@ This project features a complete, end-to-end asset pipeline, which is a major le
     2.  **`SceneNode` mirrors this for serialization:** Add `modelPath` and `meshIndexInModel` to `SceneNode`. The scene file serializes these per-node fields instead of the global `meshIndex`. On load, `do_load_scene` lazily loads each unique `modelPath` via `import_gltf`, tracks the mesh offset for each model, and computes the correct global `meshIndex` for every node.
 
 -   **Backward Compatibility via Fallback:** The loader can support old-format scene files (single root `modelPath`, global `meshIndex` per node) by detecting the absence of the new per-node `modelPath` field and falling back to the root value. This prevents hard breaks when loading scenes saved before the format change.
+
+-   **Keep the Source Hierarchy:** Imports used to flatten a glTF into one root node per mesh with baked world transforms, so a 400-node model became 400 unrelated roots and moving a parent part was impossible. The loader now also returns the node tree (`ImportedNode`: local transform, parent/children, owned meshes). `App::add_imported_hierarchy()` rebuilds it as scene nodes, with one child node per primitive when a glTF node draws several, because a `SceneNode` holds one mesh. The flat mesh order is unchanged, so `meshIndexInModel` in saved scenes still resolves. A load-time comparison confirmed the rebuilt world transforms match the old baked ones exactly on Buggy, GearboxAssy and Duck.
+
+-   **Rolling FPS Averages Lie Right After a Stall:** ImGui's `io.Framerate` averages recent frames, so a reading taken within a second of a long load shows an inflated frame time. Wait a few seconds before comparing numbers.
 
 -   **Built-in Meshes Need a Source Identity Too:** The renderer always injects a built-in cube into every scene (via `add_cube_to_scene`). This mesh has no source file, so it uses an empty `sourcePath`. On load, `load_scene_empty()` is called first, placing the cube at a known global index (0), and `modelOffsets["internal://cube"] = 0` establishes its identity in the offset map.
 

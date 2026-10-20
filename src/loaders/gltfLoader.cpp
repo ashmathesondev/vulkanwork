@@ -279,10 +279,27 @@ static void compute_tangents(std::vector<Vertex>& verts,
 
 static void extract_node(const tinygltf::Model& model, int nodeIdx,
 						 const glm::mat4& parentTransform, Scene& scene,
-						 const std::string& path)
+						 const std::string& path, int32_t parentImported)
 {
 	const auto& node = model.nodes[nodeIdx];
-	glm::mat4 transform = parentTransform * node_transform(node);
+	glm::mat4 local = node_transform(node);
+	glm::mat4 transform = parentTransform * local;
+
+	// Mirror the glTF node in the imported hierarchy
+	uint32_t importedIdx = static_cast<uint32_t>(scene.nodes.size());
+	{
+		ImportedNode in;
+		in.name = !node.name.empty() ? node.name
+				  : node.mesh >= 0 && !model.meshes[node.mesh].name.empty()
+					  ? model.meshes[node.mesh].name
+					  : "Node " + std::to_string(nodeIdx);
+		in.localTransform = local;
+		in.parent = parentImported;
+		scene.nodes.push_back(std::move(in));
+		if (parentImported >= 0)
+			scene.nodes[static_cast<size_t>(parentImported)].children.push_back(
+				importedIdx);
+	}
 
 	if (node.mesh >= 0)
 	{
@@ -423,12 +440,15 @@ static void extract_node(const tinygltf::Model& model, int nodeIdx,
 					cpuMesh.indices[i] = static_cast<uint32_t>(i);
 			}
 
+			scene.nodes[importedIdx].meshes.push_back(
+				static_cast<uint32_t>(scene.meshes.size()));
 			scene.meshes.push_back(std::move(cpuMesh));
 		}
 	}
 
 	for (int child : node.children)
-		extract_node(model, child, transform, scene, path);
+		extract_node(model, child, transform, scene, path,
+					 static_cast<int32_t>(importedIdx));
 }
 
 // =============================================================================
@@ -571,7 +591,7 @@ Scene load_gltf(const std::string& path)
 	const auto& gltfScene =
 		model.scenes[model.defaultScene >= 0 ? model.defaultScene : 0];
 	for (int nodeIdx : gltfScene.nodes)
-		extract_node(model, nodeIdx, glm::mat4{1.0f}, scene, path);
+		extract_node(model, nodeIdx, glm::mat4{1.0f}, scene, path, -1);
 
 	LOG_INFO("Loaded glTF '%s': %zu mesh(es), %zu material(s), %zu texture(s)",
 			 path.c_str(), scene.meshes.size(), scene.materials.size(),

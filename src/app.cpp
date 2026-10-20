@@ -133,8 +133,10 @@ void App::main_loop()
 			ImGui::EndMainMenuBar();
 		}
 
-		// Ctrl+S shortcut
-		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
+		// Ctrl+S shortcut. Ignored while flying the camera: Ctrl (down) + S
+		// (back) is a normal movement combination there.
+		if (!mouseCaptured && ImGui::GetIO().KeyCtrl &&
+			ImGui::IsKeyPressed(ImGuiKey_S))
 		{
 			if (currentScenePath.empty())
 				showSaveDialog_ = true;
@@ -300,10 +302,15 @@ void App::main_loop()
 
 void App::process_input()
 {
-	if (platform::key_down(window, platform::Key::Escape))
-		platform::request_close(window);
-
 	ImGuiIO& io = ImGui::GetIO();
+
+	// Quit on an Escape *press* that ImGui is not using. Escape also cancels
+	// text edits and dialogs; reacting to the held key would quit on the
+	// frame after the edit closed.
+	bool escapeDown = platform::key_down(window, platform::Key::Escape);
+	if (escapeDown && !escapeWasDown && !io.WantCaptureKeyboard)
+		platform::request_close(window);
+	escapeWasDown = escapeDown;
 
 	// --- Mouse look ----------------------------------------------------------
 	bool wantCapture =
@@ -338,7 +345,9 @@ void App::process_input()
 		lastMouseX = mx;
 		lastMouseY = my;
 
-		camera.yaw += xoff;
+		// Keep yaw in [-180, 180): unbounded growth makes saved scenes hard
+		// to read and slowly loses float precision.
+		camera.yaw = std::remainder(camera.yaw + xoff, 360.0f);
 		camera.pitch += yoff;
 		if (camera.pitch > 89.0f) camera.pitch = 89.0f;
 		if (camera.pitch < -89.0f) camera.pitch = -89.0f;
@@ -428,18 +437,80 @@ void App::add_default_lights()
 	sceneGraph.collect_lights(lights);
 }
 
+// Recreate an imported model's node tree in the scene graph. Returns the new
+// root node indices. A SceneNode holds one mesh, so a node drawing several
+// primitives keeps its transform and gets one child per primitive.
+std::vector<uint32_t> App::add_imported_hierarchy(
+	const std::vector<ImportedNode>& nodes)
+{
+	const auto& meshes = renderer.meshes();
+	std::vector<uint32_t> roots;
+
+	std::function<void(uint32_t, std::optional<uint32_t>)> add =
+		[&](uint32_t idx, std::optional<uint32_t> parent)
+	{
+		const ImportedNode& in = nodes[idx];
+
+		auto mesh_node = [&](const std::string& name, const glm::mat4& local,
+							 uint32_t mi, std::optional<uint32_t> p)
+		{
+			return sceneGraph.add_node(name, local, mi, meshes[mi].sourcePath,
+									   meshes[mi].sourceMeshIndex, p);
+		};
+
+		uint32_t self;
+		bool singleMesh = in.meshes.size() == 1 && in.meshes[0] < meshes.size();
+		if (singleMesh)
+		{
+			self = mesh_node(in.name, in.localTransform, in.meshes[0], parent);
+		}
+		else
+		{
+			self = sceneGraph.add_node(in.name, in.localTransform, std::nullopt,
+									   {}, 0, parent);
+			for (uint32_t mi : in.meshes)
+			{
+				if (mi >= meshes.size()) continue;
+				std::string name = meshes[mi].name.empty() ? in.name + " [mesh]"
+														   : meshes[mi].name;
+				mesh_node(name, glm::mat4{1.0f}, mi, self);
+			}
+		}
+		if (!parent.has_value()) roots.push_back(self);
+
+		for (uint32_t child : in.children)
+			if (child < nodes.size()) add(child, self);
+	};
+
+	for (uint32_t i = 0; i < static_cast<uint32_t>(nodes.size()); ++i)
+		if (nodes[i].parent < 0) add(i, std::nullopt);
+
+	return roots;
+}
+
 void App::build_scene_graph()
 {
 	const auto& meshes = renderer.meshes();
 	LOG_INFO("build_scene_graph: %zu meshes", meshes.size());
+
+	add_imported_hierarchy(renderer.initial_hierarchy());
+
+	// Meshes outside the model's hierarchy (the built-in cube) become roots
+	std::vector<bool> covered(meshes.size(), false);
+	for (const auto& node : renderer.initial_hierarchy())
+		for (uint32_t mi : node.meshes)
+			if (mi < covered.size()) covered[mi] = true;
 	for (uint32_t i = 0; i < static_cast<uint32_t>(meshes.size()); ++i)
 	{
+		if (covered[i]) continue;
 		std::string name = meshes[i].name;
 		if (name.empty()) name = "Mesh " + std::to_string(i);
-		LOG_INFO("  mesh[%u] '%s'", i, name.c_str());
 		sceneGraph.add_node(name, meshes[i].transform, i, meshes[i].sourcePath,
 							meshes[i].sourceMeshIndex, std::nullopt);
 	}
+
+	sceneGraph.update_world_transforms();
+	LOG_INFO("build_scene_graph: %zu nodes", sceneGraph.nodes.size());
 }
 
 // =============================================================================
@@ -480,6 +551,10 @@ void App::do_save_scene(const std::string& path)
 	data.modelPath = modelPath;
 	data.sceneGraph = sceneGraph;
 	data.camera = camera;
+	LOG_INFO(
+		"Saving camera: pos (%.3f, %.3f, %.3f) yaw %.2f pitch %.2f fov %.1f",
+		camera.position.x, camera.position.y, camera.position.z, camera.yaw,
+		camera.pitch, camera.fov);
 	data.lights = lights;
 	if (save_scene_file(path, data))
 	{
@@ -561,6 +636,10 @@ void App::do_load_scene(const std::string& path)
 
 	sceneGraph = std::move(data.sceneGraph);
 	camera = data.camera;
+	LOG_INFO(
+		"Restored camera: pos (%.3f, %.3f, %.3f) yaw %.2f pitch %.2f fov %.1f",
+		camera.position.x, camera.position.y, camera.position.z, camera.yaw,
+		camera.pitch, camera.fov);
 	lights = data.lights;
 	modelPath = data.modelPath;
 
@@ -613,23 +692,18 @@ void App::do_import_mesh(const std::string& path)
 {
 	LOG_INFO("Importing mesh: %s", path.c_str());
 	uint32_t prevMeshCount = static_cast<uint32_t>(renderer.meshes().size());
-	renderer.import_gltf(path);
+	uint32_t prevNodeCount = static_cast<uint32_t>(sceneGraph.nodes.size());
+	std::vector<ImportedNode> hierarchy = renderer.import_gltf(path);
 
-	const auto& meshes = renderer.meshes();
-	uint32_t newMeshCount = static_cast<uint32_t>(meshes.size());
-	LOG_INFO("Import complete: %u new mesh(es) added (total %u)",
-			 newMeshCount - prevMeshCount, newMeshCount);
-
-	for (uint32_t i = prevMeshCount; i < newMeshCount; ++i)
-	{
-		std::string name = meshes[i].name;
-		if (name.empty()) name = "Mesh " + std::to_string(i);
-		LOG_INFO("  Added mesh[%u] '%s'", i, name.c_str());
-		sceneGraph.add_node(name, meshes[i].transform, i, meshes[i].sourcePath,
-							meshes[i].sourceMeshIndex, std::nullopt);
-	}
-
+	uint32_t newMeshCount = static_cast<uint32_t>(renderer.meshes().size());
+	std::vector<uint32_t> roots = add_imported_hierarchy(hierarchy);
 	sceneGraph.update_world_transforms();
+
+	LOG_INFO("Import complete: %u mesh(es), %u node(s) in %zu root(s)",
+			 newMeshCount - prevMeshCount,
+			 static_cast<uint32_t>(sceneGraph.nodes.size()) - prevNodeCount,
+			 roots.size());
+	if (!roots.empty()) selection.selectedNode = roots.front();
 }
 
 bool App::upload_splat_cloud(SplatComponent& splat)

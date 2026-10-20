@@ -1,13 +1,13 @@
 {
   "camera": {
     "fov": 45.0,
-    "pitch": -47.69991683959961,
+    "pitch": -2.1010637283325195e-06,
     "position": [
-      2.736682653427124,
-      5.220925807952881,
-      3.9366235733032227
+      -4.999685764312744,
+      0.12123443186283112,
+      2.5447030067443848
     ],
-    "yaw": -134.29989624023438
+    "yaw": -28.00002098083496
   },
   "lights": {
     "ambient": {
@@ -17,26 +17,9 @@
         1.0
       ],
       "intensity": 0.029999999329447746
-    },
-    "directionals": [
-      {
-        "color": [
-          1.0,
-          1.0,
-          1.0
-        ],
-        "direction": [
-          0.4319342076778412,
-          -0.8638684153556824,
-          0.2591605484485626
-        ],
-        "intensity": 3.0
-      }
-    ],
-    "points": [],
-    "spots": []
+    }
   },
-  "modelPath": "E:/work/personal/vulkanwork/models/DamagedHelmet.glb",
+  "modelPath": "E:/work/personal/vulkanwork/models\\DamagedHelmet.glb",
   "nodes": [
     {
       "children": [],
@@ -59,6 +42,8 @@
         1.0
       ],
       "meshIndex": 0,
+      "meshIndexInModel": 0,
+      "modelPath": "E:/work/personal/vulkanwork/models\\DamagedHelmet.glb",
       "name": "node_damagedHelmet_-6514",
       "parent": null
     },
@@ -83,9 +68,49 @@
         1.0
       ],
       "meshIndex": 1,
+      "meshIndexInModel": 0,
+      "modelPath": "internal://cube",
       "name": "Cube",
+      "parent": null
+    },
+    {
+      "children": [],
+      "light": {
+        "color": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "innerConeAngle": 0.4363323152065277,
+        "intensity": 3.0,
+        "outerConeAngle": 0.6108652353286743,
+        "radius": 10.0,
+        "type": "Directional"
+      },
+      "localTransform": [
+        -0.5144957900047302,
+        0.0,
+        0.8574929237365723,
+        0.0,
+        0.7407610416412354,
+        0.5037175416946411,
+        0.44445666670799255,
+        0.0,
+        -0.4319342076778412,
+        0.8638684153556824,
+        -0.2591605484485626,
+        0.0,
+        0.0,
+        5.0,
+        0.0,
+        1.0
+      ],
+      "meshIndex": null,
+      "meshIndexInModel": 0,
+      "modelPath": "",
+      "name": "Sun",
       "parent": null
     }
   ],
-  "version": 1
+  "version": 2
 }
