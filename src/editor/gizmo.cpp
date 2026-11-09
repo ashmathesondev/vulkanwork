@@ -62,3 +62,5 @@ bool Gizmo::manipulate(const glm::mat4& view, const glm::mat4& proj,
 }
 
 bool Gizmo::is_using() const { return ImGuizmo::IsUsing(); }
+
+bool Gizmo::is_over() const { return ImGuizmo::IsOver(); }

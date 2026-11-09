@@ -30,4 +30,6 @@ struct Gizmo
 					float viewportW, float viewportH);
 
 	bool is_using() const;
+	// Only meaningful after manipulate() ran this frame.
+	bool is_over() const;
 };

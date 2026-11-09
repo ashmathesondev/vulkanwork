@@ -265,6 +265,25 @@ void App::main_loop()
 			}
 		}
 
+		// --- Left-click picking ------------------------------------------
+		// Runs after the gizmo so a press on a handle is seen as gizmo input.
+		// IsMouseClicked is press-only, so drags that start on a panel and
+		// leave it never pick.
+		{
+			const ImGuiIO& io = ImGui::GetIO();
+			bool overGizmo =
+				selection.selectedNode.has_value() && gizmo.is_over();
+			if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+				!io.WantCaptureMouse && !mouseCaptured && !overGizmo &&
+				!gizmo.is_using())
+			{
+				selection.pick(io.MousePos.x, io.MousePos.y, io.DisplaySize.x,
+							   io.DisplaySize.y, renderer.last_view(),
+							   renderer.last_proj(), sceneGraph,
+							   renderer.meshes());
+			}
+		}
+
 		// --- Sync scene graph → mesh transforms and lights ---------------
 		sceneGraph.update_world_transforms();
 		sceneGraph.collect_lights(lights);
@@ -286,7 +305,11 @@ void App::main_loop()
 
 		float time = static_cast<float>(platform::time_seconds());
 		renderer.update_uniforms(camera, time, lights);
-		renderer.update_debug_lines(lights);
+		std::optional<uint32_t> selectedMesh;
+		if (selection.selectedNode.has_value() &&
+			*selection.selectedNode < sceneGraph.nodes.size())
+			selectedMesh = sceneGraph.nodes[*selection.selectedNode].meshIndex;
+		renderer.update_debug_lines(lights, selectedMesh);
 		renderer.draw_scene(frame->cmd);
 
 		// ImGui draws into the same render pass
@@ -361,25 +384,6 @@ void App::process_input()
 			  std::cos(glm::radians(camera.pitch));
 		camera.front = glm::normalize(d);
 	}
-
-	// --- Left-click picking --------------------------------------------------
-	if (!io.WantCaptureMouse && !gizmo.is_using())
-	{
-		if (platform::mouse_down(window, platform::MouseButton::Left) &&
-			!leftClickHeld)
-		{
-			leftClickHeld = true;
-			double mx, my;
-			platform::cursor_pos(window, mx, my);
-			VkExtent2D ext = renderer.swapchain_extent();
-			selection.pick(static_cast<float>(mx), static_cast<float>(my),
-						   static_cast<float>(ext.width),
-						   static_cast<float>(ext.height), renderer.last_view(),
-						   renderer.last_proj(), sceneGraph, renderer.meshes());
-		}
-	}
-	if (!platform::mouse_down(window, platform::MouseButton::Left))
-		leftClickHeld = false;
 
 	// --- Keyboard movement ---------------------------------------------------
 	if (!io.WantCaptureKeyboard)
