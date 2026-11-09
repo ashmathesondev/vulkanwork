@@ -21,12 +21,13 @@ jobs:
             triplet: x64-windows
             vcpkg-root: C:\vcpkg
             compiler-flags: -T ClangCL
-          - os: ubuntu-latest
+          # Pinned: the LunarG apt repo below only serves noble (24.04).
+          - os: ubuntu-24.04
             compiler: gcc
             triplet: x64-linux
             vcpkg-root: /usr/local/share/vcpkg
             compiler-flags: -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             compiler: clang
             triplet: x64-linux
             vcpkg-root: /usr/local/share/vcpkg
