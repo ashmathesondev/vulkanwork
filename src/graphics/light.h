@@ -63,7 +63,9 @@ struct GPULight
 	alignas(16) glm::vec4 positionAndType;	   // xyz=position, w=float(type)
 	alignas(16) glm::vec4 directionAndRadius;  // xyz=direction, w=radius
 	alignas(16) glm::vec4 colorAndIntensity;   // xyz=color, w=intensity
-	alignas(16) glm::vec4 coneParams;  // x=cos(inner), y=cos(outer), zw=0
+	// x=cos(inner), y=cos(outer), z=first shadow layer (-1 = no shadow),
+	// w=shadow texel size (world units, per unit distance unless directional)
+	alignas(16) glm::vec4 coneParams;
 };
 
 // =============================================================================

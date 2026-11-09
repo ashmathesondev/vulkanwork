@@ -24,6 +24,11 @@ class GaussianSplatSystem;
 static constexpr uint32_t TILE_SIZE = 16;
 static constexpr uint32_t MAX_LIGHTS_PER_TILE = 256;
 static constexpr uint32_t MAX_LIGHTS = 1024;
+static constexpr uint32_t MAX_SHADOW_CASTERS = 16;
+// Directional and spot lights use one layer, point lights use six.
+// Keep in sync with MAX_SHADOW_LAYERS in pbr.frag.
+static constexpr uint32_t MAX_SHADOW_LAYERS = 36;
+static constexpr uint32_t SHADOW_MAP_SIZE = 1024;
 
 // =============================================================================
 // Renderer
@@ -43,6 +48,10 @@ struct Renderer
 		VkCommandBuffer cmd;
 		uint32_t imageIndex;
 	};
+	// Selects shadow casters; call after mesh transforms are synced and
+	// before begin_frame(), which records the shadow passes.
+	void update_shadows(const glm::vec3& cameraPos,
+						const LightEnvironment& lights);
 	std::optional<FrameContext> begin_frame();
 	void update_uniforms(const Camera& camera, float time,
 						 const LightEnvironment& lights);
@@ -146,6 +155,21 @@ struct Renderer
 	VkPipelineLayout depthPrepassPipelineLayout_ = VK_NULL_HANDLE;
 	VkPipeline depthPrepassPipeline_ = VK_NULL_HANDLE;
 
+	// Shadow maps (one depth array, one layer per shadow view)
+	VkImage shadowImage_ = VK_NULL_HANDLE;
+	VkDeviceMemory shadowMemory_ = VK_NULL_HANDLE;
+	VkImageView shadowArrayView_ = VK_NULL_HANDLE;
+	std::array<VkImageView, MAX_SHADOW_LAYERS> shadowLayerViews_{};
+	std::array<VkFramebuffer, MAX_SHADOW_LAYERS> shadowFramebuffers_{};
+	VkSampler shadowSampler_ = VK_NULL_HANDLE;
+	VkRenderPass shadowRenderPass_ = VK_NULL_HANDLE;
+	VkPipelineLayout shadowPipelineLayout_ = VK_NULL_HANDLE;
+	VkPipeline shadowPipeline_ = VK_NULL_HANDLE;
+	std::array<glm::mat4, MAX_SHADOW_LAYERS> shadowMatrices_{};
+	uint32_t shadowLayerCount_ = 0;
+	// Per GPU light: x=first shadow layer or -1, y=shadow texel size.
+	std::vector<glm::vec2> shadowParams_;
+
 	// PBR pipeline
 	VkDescriptorSetLayout frameSetLayout_ = VK_NULL_HANDLE;
 	VkDescriptorSetLayout materialSetLayout_ = VK_NULL_HANDLE;
@@ -215,6 +239,7 @@ struct Renderer
 		alignas(4) uint32_t tileCountY;
 		alignas(4) uint32_t screenWidth;
 		alignas(4) uint32_t screenHeight;
+		alignas(16) glm::mat4 shadowMatrices[MAX_SHADOW_LAYERS];
 	};
 	std::vector<VkBuffer> uniformBuffers_;
 	std::vector<VkDeviceMemory> uniformBuffersMemory_;
@@ -275,9 +300,12 @@ struct Renderer
 	void create_heatmap_pipeline();
 	void create_debug_line_pipeline();
 	void create_debug_line_buffers();
+	void create_shadow_resources();
+	void create_shadow_pipeline();
 
 	// Forward+ per-frame
 	void draw_depth_prepass(VkCommandBuffer cmd);
+	void draw_shadow_maps(VkCommandBuffer cmd);
 
 	// Scene helpers
 	void add_cube_to_scene(Scene& scene);
@@ -307,9 +335,10 @@ struct Renderer
 	void copy_buffer(VkBuffer src, VkBuffer dst, VkDeviceSize size);
 	VkCommandBuffer begin_single_time_commands();
 	void end_single_time_commands(VkCommandBuffer cmd);
-	VkImageView create_image_view(VkImage image, VkFormat format,
-								  VkImageAspectFlags aspect,
-								  uint32_t mipLevels = 1);
+	VkImageView create_image_view(
+		VkImage image, VkFormat format, VkImageAspectFlags aspect,
+		uint32_t mipLevels = 1, uint32_t baseLayer = 0, uint32_t layerCount = 1,
+		VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D);
 	VkFormat find_supported_format(const std::vector<VkFormat>& candidates,
 								   VkImageTiling tiling,
 								   VkFormatFeatureFlags features);

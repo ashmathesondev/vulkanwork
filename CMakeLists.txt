@@ -37,6 +37,7 @@ set(SHADERS
     ${SHADER_SRC_DIR}/cube.frag
     ${SHADER_SRC_DIR}/pbr.vert
     ${SHADER_SRC_DIR}/pbr.frag
+    ${SHADER_SRC_DIR}/shadow.vert
     ${SHADER_SRC_DIR}/light_cull.comp
     ${SHADER_SRC_DIR}/debug_heatmap.vert
     ${SHADER_SRC_DIR}/debug_heatmap.frag
@@ -160,6 +161,7 @@ set(PAK_ASSET_ARGS
     shaders/cube.frag.spv=${SHADER_BIN_DIR}/cube.frag.spv
     shaders/pbr.vert.spv=${SHADER_BIN_DIR}/pbr.vert.spv
     shaders/pbr.frag.spv=${SHADER_BIN_DIR}/pbr.frag.spv
+    shaders/shadow.vert.spv=${SHADER_BIN_DIR}/shadow.vert.spv
     shaders/light_cull.comp.spv=${SHADER_BIN_DIR}/light_cull.comp.spv
     shaders/debug_heatmap.vert.spv=${SHADER_BIN_DIR}/debug_heatmap.vert.spv
     shaders/debug_heatmap.frag.spv=${SHADER_BIN_DIR}/debug_heatmap.frag.spv
