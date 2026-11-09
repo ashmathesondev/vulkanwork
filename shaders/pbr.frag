@@ -2,6 +2,7 @@
 
 const float PI = 3.14159265359;
 const uint TILE_SIZE = 16;
+const int MAX_SHADOW_LAYERS = 36;  // Keep in sync with renderer.h
 
 // Light types
 const uint LIGHT_DIRECTIONAL = 0;
@@ -20,6 +21,7 @@ layout(set = 0, binding = 0) uniform FrameUBO {
     uint  tileCountY;
     uint  screenWidth;
     uint  screenHeight;
+    mat4  shadowMatrices[MAX_SHADOW_LAYERS];
 } frame;
 
 // Per-material textures (set 1)
@@ -52,6 +54,8 @@ layout(std430, set = 2, binding = 0) readonly buffer LightBuffer {
 layout(std430, set = 2, binding = 1) readonly buffer TileLightBuffer {
     uint tileData[];
 };
+
+layout(set = 2, binding = 3) uniform sampler2DArrayShadow shadowMaps;
 
 // Inputs from vertex shader
 layout(location = 0) in vec3 fragWorldPos;
@@ -126,6 +130,52 @@ vec3 evaluateBRDF(vec3 N, vec3 V, vec3 L, vec3 albedo, float metallic,
 }
 
 // =============================================================================
+// Shadows
+// =============================================================================
+
+float sampleShadowLayer(uint layer, vec3 worldPos)
+{
+    vec4 clip = frame.shadowMatrices[layer] * vec4(worldPos, 1.0);
+    if (clip.w <= 0.0) return 1.0;
+    vec3 ndc = clip.xyz / clip.w;
+    if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 || ndc.z < 0.0 || ndc.z > 1.0)
+        return 1.0;
+
+    vec2 uv = ndc.xy * 0.5 + 0.5;
+    vec2 texel = 1.0 / vec2(textureSize(shadowMaps, 0).xy);
+    float lit = 0.0;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x)
+            lit += texture(shadowMaps, vec4(uv + vec2(x, y) * texel, float(layer), ndc.z));
+    return lit / 9.0;
+}
+
+// Returns 1 when lit, 0 when fully shadowed.
+float lightShadow(GPULight light, uint lightType, vec3 L, float dist)
+{
+    int baseLayer = int(light.coneParams.z);
+    if (baseLayer < 0) return 1.0;
+
+    // Normal offset scaled to the world size of a shadow texel at this point
+    vec3 Ng = normalize(fragTBN[2]);
+    float cosTheta = clamp(dot(Ng, L), 0.0, 1.0);
+    float texelSize = light.coneParams.w * (lightType == LIGHT_DIRECTIONAL ? 1.0 : dist);
+    vec3 pos = fragWorldPos + Ng * texelSize * (1.0 + 2.0 * sqrt(1.0 - cosTheta * cosTheta));
+
+    uint layer = uint(baseLayer);
+    if (lightType == LIGHT_POINT)
+    {
+        // Face order matches Renderer::update_shadows: +X -X +Y -Y +Z -Z
+        vec3 d = pos - light.positionAndType.xyz;
+        vec3 a = abs(d);
+        if (a.x >= a.y && a.x >= a.z) layer += d.x > 0.0 ? 0u : 1u;
+        else if (a.y >= a.z)          layer += d.y > 0.0 ? 2u : 3u;
+        else                          layer += d.z > 0.0 ? 4u : 5u;
+    }
+    return sampleShadowLayer(layer, pos);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -173,7 +223,8 @@ void main()
         {
             vec3 L = normalize(-light.directionAndRadius.xyz);
             Lo += evaluateBRDF(N, V, L, albedo, metallic, roughness, F0,
-                               lightColor, lightIntensity);
+                               lightColor, lightIntensity) *
+                  lightShadow(light, lightType, L, 1.0);
         }
         else if (lightType == LIGHT_POINT)
         {
@@ -183,7 +234,8 @@ void main()
             float radius = light.directionAndRadius.w;
             float atten = attenuate(dist, radius);
             Lo += evaluateBRDF(N, V, L, albedo, metallic, roughness, F0,
-                               lightColor, lightIntensity * atten);
+                               lightColor, lightIntensity * atten) *
+                  lightShadow(light, lightType, L, dist);
         }
         else if (lightType == LIGHT_SPOT)
         {
@@ -200,7 +252,8 @@ void main()
             float spotFactor = smoothstep(cosOuter, cosInner, cosAngle);
 
             Lo += evaluateBRDF(N, V, L, albedo, metallic, roughness, F0,
-                               lightColor, lightIntensity * atten * spotFactor);
+                               lightColor, lightIntensity * atten * spotFactor) *
+                  lightShadow(light, lightType, L, dist);
         }
     }
 
