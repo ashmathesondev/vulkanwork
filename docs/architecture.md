@@ -24,6 +24,6 @@ Layered structure: `main.cpp` → `App` → `Renderer` → graphics subsystems.
 2. pak_packer (`tools/packer/`) bundles SPIR-V + textures into LZ4-compressed `assets.pak`
 3. Runtime: `pak::PackFile` (`src/pak/`) reads and decompresses on demand
 
-**Loaders** (`src/loaders/`): glTF 2.0 via TinyGLTF, PLY for point clouds, dedicated gaussian splat loader.
+**Loaders** (`src/loaders/`): glTF 2.0 via TinyGLTF, FBX and COLLADA via AssImp (desktop only), PLY for point clouds, dedicated gaussian splat loader.
 
 **Gaussian splats** (`src/graphics/gaussianSplats.h/cpp`, `shaders/gsplat*.comp/vert/frag`): separate rendering path documented in `docs/gaussian_splats.md`.

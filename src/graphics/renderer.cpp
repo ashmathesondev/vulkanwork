@@ -8,6 +8,13 @@
 #include "loaders/gltfLoader.h"
 #include "platform/platform.h"
 
+#ifndef __ANDROID__
+#include <cctype>
+#include <filesystem>
+
+#include "loaders/assimpLoader.h"
+#endif
+
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
@@ -1615,9 +1622,20 @@ void Renderer::add_cube_to_scene(Scene& scene)
 	scene.meshes.push_back(std::move(cube));
 }
 
+static Scene load_model(const std::string& path)
+{
+#ifndef __ANDROID__
+	std::string ext = std::filesystem::path(path).extension().string();
+	std::transform(ext.begin(), ext.end(), ext.begin(),
+				   [](unsigned char c) { return std::tolower(c); });
+	if (ext == ".fbx" || ext == ".dae") return load_assimp(path);
+#endif
+	return load_gltf(path);
+}
+
 void Renderer::load_scene(const std::string& modelPath)
 {
-	Scene scene = load_gltf(modelPath);
+	Scene scene = load_model(modelPath);
 
 	// Upload glTF textures in-place
 	for (auto& tex : scene.textures) upload_texture(tex);
@@ -1707,7 +1725,7 @@ std::vector<ImportedNode> Renderer::import_gltf(const std::string& path)
 {
 	vkDeviceWaitIdle(device_);
 
-	Scene scene = load_gltf(path);
+	Scene scene = load_model(path);
 
 	uint32_t texOffset = static_cast<uint32_t>(textures_.size());
 	uint32_t matOffset = static_cast<uint32_t>(materials_.size());

@@ -13,6 +13,7 @@ option(VW_PORTABLE "Load assets relative to the executable" OFF)
 find_package(Vulkan REQUIRED)
 if(NOT ANDROID)
     find_package(glfw3 CONFIG REQUIRED)
+    find_package(assimp CONFIG REQUIRED)
 endif()
 find_package(glm CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
@@ -89,6 +90,9 @@ file(GLOB_RECURSE HEADER_FILES "src/*.h" "src/*.hpp")
 # it into the executable as well defines every PackFile symbol twice, which
 # lld-link (VS ClangCL toolset) rejects as duplicate symbols.
 list(FILTER SRC_FILES EXCLUDE REGEX "/src/pak/")
+if(ANDROID)
+    list(FILTER SRC_FILES EXCLUDE REGEX "/src/loaders/assimpLoader\\.cpp$")
+endif()
 
 source_group(TREE ${CMAKE_SOURCE_DIR}/src PREFIX "Source Files" FILES ${SRC_FILES})
 source_group(TREE ${CMAKE_SOURCE_DIR}/src PREFIX "Header Files" FILES ${HEADER_FILES})
@@ -131,7 +135,7 @@ target_link_libraries(vulkanwork PRIVATE
 )
 
 if(NOT ANDROID)
-    target_link_libraries(vulkanwork PRIVATE glfw)
+    target_link_libraries(vulkanwork PRIVATE glfw assimp::assimp)
 else()
     target_link_libraries(vulkanwork PRIVATE android log)
 endif()
@@ -218,7 +222,11 @@ if(NOT ANDROID)
 
     install(TARGETS vulkanwork RUNTIME DESTINATION .)
     if(WIN32)
-        install(FILES $<TARGET_RUNTIME_DLLS:vulkanwork> DESTINATION .)
+        # TARGET_RUNTIME_DLLS omits dependencies of dependencies (assimp's
+        # minizip, pugixml and others). vcpkg copies the full set beside the exe.
+        install(DIRECTORY $<TARGET_FILE_DIR:vulkanwork>/ DESTINATION .
+                FILES_MATCHING PATTERN "*.dll"
+                PATTERN "vulkan-1.dll" EXCLUDE)
         set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION .)
         include(InstallRequiredSystemLibraries)
     endif()

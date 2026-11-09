@@ -11,6 +11,10 @@
       "name": "glfw3",
       "platform": "!android"
     },
+    {
+      "name": "assimp",
+      "platform": "!android"
+    },
     "glm",
     {
       "name": "imgui",

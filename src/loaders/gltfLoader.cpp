@@ -222,8 +222,8 @@ static glm::vec3 safe_normalize_tangent(const glm::vec3& tangent,
 	return glm::normalize(orthogonal);
 }
 
-static void compute_tangents(std::vector<Vertex>& verts,
-							 const std::vector<uint32_t>& indices)
+void compute_tangents(std::vector<Vertex>& verts,
+					  const std::vector<uint32_t>& indices)
 {
 	std::vector<glm::vec3> tan1(verts.size(), glm::vec3(0));
 	std::vector<glm::vec3> tan2(verts.size(), glm::vec3(0));
