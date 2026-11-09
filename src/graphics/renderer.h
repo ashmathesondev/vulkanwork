@@ -50,8 +50,7 @@ struct Renderer
 	};
 	// Selects shadow casters; call after mesh transforms are synced and
 	// before begin_frame(), which records the shadow passes.
-	void update_shadows(const glm::vec3& cameraPos,
-						const LightEnvironment& lights);
+	void update_shadows(const Camera& camera, const LightEnvironment& lights);
 	std::optional<FrameContext> begin_frame();
 	void update_uniforms(const Camera& camera, float time,
 						 const LightEnvironment& lights);
@@ -180,10 +179,31 @@ struct Renderer
 	VkRenderPass shadowRenderPass_ = VK_NULL_HANDLE;
 	VkPipelineLayout shadowPipelineLayout_ = VK_NULL_HANDLE;
 	VkPipeline shadowPipeline_ = VK_NULL_HANDLE;
+	// The matrix each layer was (or will next be) rendered with. A layer whose
+	// matrix still matches and is not dirty keeps its depth from earlier
+	// frames.
 	std::array<glm::mat4, MAX_SHADOW_LAYERS> shadowMatrices_{};
-	uint32_t shadowLayerCount_ = 0;
+	std::array<bool, MAX_SHADOW_LAYERS> shadowLayerDirty_{};
+	std::array<bool, MAX_SHADOW_LAYERS> shadowLayerInUse_{};
 	// Per GPU light: x=first shadow layer or -1, y=shadow texel size.
 	std::vector<glm::vec2> shadowParams_;
+	// Meshes as of the last update_shadows(), to detect what moved.
+	struct ShadowCaster
+	{
+		VkBuffer vertexBuffer;
+		size_t indexCount;
+		AABB localBounds;
+		glm::mat4 transform;
+	};
+	std::vector<ShadowCaster> shadowCasters_;
+	// One light's views this frame; layers is 6 for point lights, else 1.
+	struct ShadowView
+	{
+		uint32_t light;
+		uint32_t layers;
+		float texelSize;
+		std::array<glm::mat4, 6> matrices;
+	};
 
 	// PBR pipeline
 	VkDescriptorSetLayout frameSetLayout_ = VK_NULL_HANDLE;
@@ -255,6 +275,7 @@ struct Renderer
 		alignas(4) uint32_t tileCountY;
 		alignas(4) uint32_t screenWidth;
 		alignas(4) uint32_t screenHeight;
+		alignas(4) uint32_t tileCullingOff;
 		alignas(16) glm::mat4 shadowMatrices[MAX_SHADOW_LAYERS];
 	};
 	std::vector<VkBuffer> uniformBuffers_;
@@ -322,6 +343,8 @@ struct Renderer
 	// Forward+ per-frame
 	void draw_depth_prepass(VkCommandBuffer cmd);
 	void draw_shadow_maps(VkCommandBuffer cmd);
+	void invalidate_stale_shadow_layers();
+	void place_shadow_views(const std::vector<ShadowView>& views);
 
 	// Scene helpers
 	void add_cube_to_scene(Scene& scene);

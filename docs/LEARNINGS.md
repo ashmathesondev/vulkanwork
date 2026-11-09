@@ -336,7 +336,7 @@ Do not confuse the shadow maps with the depth prepass. The prepass stores depth 
 | Step | Where | What it does |
 |---|---|---|
 | Choose lights, build matrices | `Renderer::update_shadows()` (before `begin_frame()`) | Fills `shadowMatrices_` and `shadowParams_` |
-| Render depth from each light | `Renderer::draw_shadow_maps()` (first thing in `begin_frame()`) | One render pass per used layer |
+| Render depth from each light | `Renderer::draw_shadow_maps()` (first thing in `begin_frame()`) | One render pass per layer that changed (section 15.6) |
 | Upload to the GPU | `Renderer::update_uniforms()` | Matrices go in `FrameUBO`; first layer and texel size go in `GPULight::coneParams.zw` |
 | Test each pixel | `lightShadow()` and `sampleShadowLayer()` in `pbr.frag` | Returns 1 for lit, 0 for shadowed, and fractions at edges |
 
@@ -357,6 +357,7 @@ Layers are limited, so `update_shadows()` ranks the lights every frame:
 -   Directional lights come first, then point and spot lights by `intensity / (distanceToCamera² + 1)`.
 -   Lights are taken in that order, up to 16 casters (`MAX_SHADOW_CASTERS`) and 36 layers (`MAX_SHADOW_LAYERS`). If a point light does not fit in the remaining layers, it is skipped and a later spot light can still take the last layer.
 -   Lights with zero intensity are skipped.
+-   Point and spot lights whose radius sphere is fully outside the camera frustum are skipped, so an off-screen light cannot take layers from a visible one. Light reaches zero at its radius, so such a light cannot affect any visible pixel. Directional lights are never skipped.
 -   Everything else gets `coneParams.z = -1`, and the shader treats it as always lit. An unselected light shines through walls.
 
 Because the ranking uses the camera position, moving the camera can change which lights are selected, and a light's shadow can pop on or off.
@@ -375,15 +376,24 @@ Depth is linear for directional lights. For spot and point lights it is non-line
 
 ### 15.6 The shadow pass
 
-`draw_shadow_maps()` runs one depth-only render pass per used layer, clearing to 1.0 and drawing every mesh that survives a test against that layer's frustum. The pipeline is minimal:
+`draw_shadow_maps()` runs one depth-only render pass per layer that needs new depth, clearing to 1.0 and drawing every mesh that survives a test against that layer's frustum. The pipeline is minimal:
 
 -   Vertex shader only (`shadow.vert`), with position as the sole attribute and the light's MVP as a push constant. There is no fragment shader, because only depth is written.
 -   `VK_CULL_MODE_NONE`, so open and single-sided meshes still cast.
 -   Depth bias enabled (section 15.8).
 
-Each light view redraws the scene, so a point light costs up to six full scene passes. Nothing is cached between frames.
+Redrawing a view redraws the scene, so a moving point light costs up to six full scene passes per frame. Depth is reused whenever it would come out the same:
+
+-   **A layer is identified by its matrix, not by its light.** `place_shadow_views()` first looks for a layer already holding the wanted matrix. Lights can change rank or index, or leave the selection and come back, and still find their depth. A moved light has a new matrix, so it counts as a new view.
+-   **New views take layers with nothing worth keeping first.** Only then do they evict depth from a light that is not selected this frame. If no six adjacent layers are free for a point light, every view is repacked from layer 0.
+-   **A layer goes dirty when a mesh moved within its view.** `invalidate_stale_shadow_layers()` compares each mesh with last frame's copy and tests the old and new positions against each layer. Adding or removing a mesh marks every layer dirty.
+-   **Dirty flags are cleared only when the pass is recorded,** so a frame abandoned by `begin_frame()` during swapchain recreation does not lose the update.
+
+Moving a mesh can also change the scene bounds and so every directional light's matrix, which redraws those layers.
 
 ### 15.7 The lookup in `pbr.frag`
+
+`applyShadow()` skips all of this when the light adds nothing to the fragment: back-facing, past its radius or outside its cone.
 
 1.  `lightShadow()` returns 1 right away if the light has no shadow layer.
 2.  It moves the world position slightly off the surface (section 15.8).
@@ -424,7 +434,7 @@ The per-frame buffers exist once per frame in flight, but there is only one shad
 -   **External to subpass 0:** depth writes wait for earlier fragment-shader work, which includes the previous frame's shadow sampling.
 -   **Subpass 0 to external:** this frame's sampling waits for the depth writes and can see them.
 
-The pass uses `initialLayout = UNDEFINED`, because the old contents are cleared anyway, and ends in `SHADER_READ_ONLY_OPTIMAL`. Layers with no caster are never rendered, yet the whole array stays bound for sampling, so `create_shadow_resources()` moves every layer to the read layout once at startup.
+The pass uses `initialLayout = UNDEFINED`, because a layer it renders is cleared anyway, and ends in `SHADER_READ_ONLY_OPTIMAL`. Layers it skips keep their depth and stay in the read layout. Layers with no caster are never rendered, yet the whole array stays bound for sampling, so `create_shadow_resources()` moves every layer to the read layout once at startup.
 
 ### 15.10 Limitations and symptoms
 
@@ -439,3 +449,4 @@ The pass ignores materials, so alpha-cutout geometry such as foliage casts solid
 | Seam along a point light's face boundary | Margin or face selection does not match the face matrices |
 | Shadow appears or vanishes as the camera moves | Caster selection changed |
 | Mirrored or misplaced shadows | Rendering and lookup do not use the same matrix |
+| Shadow left behind after something changed | A change that the dirty tracking does not detect (section 15.6) |

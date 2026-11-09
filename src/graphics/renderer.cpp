@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -270,6 +271,9 @@ void Renderer::cleanup()
 // Per-frame rendering
 // =============================================================================
 
+static constexpr float CAMERA_NEAR = 0.1f;
+static constexpr float CAMERA_FAR = 100.0f;
+
 std::optional<Renderer::FrameContext> Renderer::begin_frame()
 {
 	vkWaitForFences(device_, 1, &inFlightFences_[currentFrame_], VK_TRUE,
@@ -422,13 +426,14 @@ void Renderer::update_uniforms(const Camera& camera, float time,
 
 	float aspect = static_cast<float>(swapchainExtent_.width) /
 				   static_cast<float>(swapchainExtent_.height);
-	ubo.proj = glm::perspective(glm::radians(camera.fov), aspect, 0.1f, 100.0f);
+	ubo.proj = glm::perspective(glm::radians(camera.fov), aspect, CAMERA_NEAR,
+								CAMERA_FAR);
 	ubo.proj[1][1] *= -1.0f;  // Vulkan Y-flip
 
 	// Cache for picking / gizmo (store un-flipped proj for ImGuizmo)
 	lastView_ = ubo.view;
-	lastProj_ =
-		glm::perspective(glm::radians(camera.fov), aspect, 0.1f, 100.0f);
+	lastProj_ = glm::perspective(glm::radians(camera.fov), aspect, CAMERA_NEAR,
+								 CAMERA_FAR);
 	ubo.invProj = glm::inverse(ubo.proj);
 
 	ubo.cameraPos = camera.position;
@@ -438,6 +443,7 @@ void Renderer::update_uniforms(const Camera& camera, float time,
 	ubo.tileCountY = tileCountY_;
 	ubo.screenWidth = swapchainExtent_.width;
 	ubo.screenHeight = swapchainExtent_.height;
+	ubo.tileCullingOff = debugSkipDepthPrepass_ ? 1u : 0u;
 	std::copy(shadowMatrices_.begin(), shadowMatrices_.end(),
 			  ubo.shadowMatrices);
 
@@ -2562,6 +2568,26 @@ static bool aabb_outside_clip(const AABB& b, const glm::mat4& mvp)
 	return std::find(outside.begin(), outside.end(), 8) != outside.end();
 }
 
+// Conservative: true only when the sphere is fully outside one clip plane.
+static bool sphere_outside_clip(const glm::vec3& center, float radius,
+								const glm::mat4& viewProj)
+{
+	const auto row = [&](int r)
+	{
+		return glm::vec4(viewProj[0][r], viewProj[1][r], viewProj[2][r],
+						 viewProj[3][r]);
+	};
+	const std::array<glm::vec4, 6> planes = {row(3) + row(0), row(3) - row(0),
+											 row(3) + row(1), row(3) - row(1),
+											 row(2),		  row(3) - row(2)};
+	for (const glm::vec4& p : planes)
+	{
+		const glm::vec3 n(p);
+		if (glm::dot(n, center) + p.w < -radius * glm::length(n)) return true;
+	}
+	return false;
+}
+
 static glm::mat4 shadow_look(const glm::vec3& eye, const glm::vec3& dir)
 {
 	const glm::vec3 up = std::abs(dir.y) > 0.99f ? glm::vec3(0.0f, 0.0f, 1.0f)
@@ -2681,6 +2707,8 @@ void Renderer::create_shadow_resources()
 									 &shadowFramebuffers_[layer]));
 	}
 
+	shadowLayerDirty_.fill(true);
+
 	// Layers without a caster are never rendered, yet the whole array is
 	// bound for sampling, so every layer must start in the read layout.
 	VkCommandBuffer cmd = begin_single_time_commands();
@@ -2790,10 +2818,133 @@ void Renderer::create_shadow_pipeline()
 	vkDestroyShaderModule(device_, vertMod, nullptr);
 }
 
-void Renderer::update_shadows(const glm::vec3& cameraPos,
+// Dirty flags outlive the frame on purpose: if begin_frame() bails out, the
+// layer is still redrawn by the next frame that records shadow passes.
+void Renderer::invalidate_stale_shadow_layers()
+{
+	const bool sameMeshes =
+		std::equal(shadowCasters_.begin(), shadowCasters_.end(),
+				   meshes_.begin(), meshes_.end(),
+				   [](const ShadowCaster& c, const Mesh& m)
+				   {
+					   return c.vertexBuffer == m.vertexBuffer &&
+							  c.indexCount == m.indices.size() &&
+							  c.localBounds.min == m.localBounds.min &&
+							  c.localBounds.max == m.localBounds.max;
+				   });
+
+	if (!sameMeshes)
+		shadowLayerDirty_.fill(true);
+	else
+	{
+		for (size_t m = 0; m < meshes_.size(); ++m)
+		{
+			const ShadowCaster& old = shadowCasters_[m];
+			if (old.transform == meshes_[m].transform) continue;
+			// A layer only changes if the mesh was or now is in its view.
+			for (uint32_t layer = 0; layer < MAX_SHADOW_LAYERS; ++layer)
+			{
+				const glm::mat4& vp = shadowMatrices_[layer];
+				if (!aabb_outside_clip(old.localBounds, vp * old.transform) ||
+					!aabb_outside_clip(old.localBounds,
+									   vp * meshes_[m].transform))
+					shadowLayerDirty_[layer] = true;
+			}
+		}
+	}
+
+	shadowCasters_.clear();
+	for (const Mesh& m : meshes_)
+		shadowCasters_.push_back(
+			{m.vertexBuffer, m.indices.size(), m.localBounds, m.transform});
+}
+
+// Views are matched to layers by matrix instead of by light, so the depth a
+// layer holds stays reusable even when the light's rank or index changes.
+void Renderer::place_shadow_views(const std::vector<ShadowView>& views)
+{
+	const auto is_free = [&](uint32_t base, uint32_t count, bool emptyOnly)
+	{
+		for (uint32_t l = base; l < base + count; ++l)
+			if (shadowLayerInUse_[l] || (emptyOnly && !shadowLayerDirty_[l]))
+				return false;
+		return true;
+	};
+	const auto holds = [&](const ShadowView& v, uint32_t base)
+	{
+		return std::equal(v.matrices.begin(), v.matrices.begin() + v.layers,
+						  shadowMatrices_.begin() + base);
+	};
+
+	std::vector<int32_t> bases(views.size(), -1);
+	const auto claim = [&](size_t v, uint32_t base)
+	{
+		bases[v] = static_cast<int32_t>(base);
+		std::fill_n(shadowLayerInUse_.begin() + base, views[v].layers, true);
+	};
+
+	// Cached views first, so that new views cannot evict them.
+	for (size_t v = 0; v < views.size(); ++v)
+		for (uint32_t b = 0; b + views[v].layers <= MAX_SHADOW_LAYERS; ++b)
+			if (is_free(b, views[v].layers, false) && holds(views[v], b))
+			{
+				claim(v, b);
+				break;
+			}
+
+	// Then new views, preferring layers with nothing worth keeping.
+	bool fragmented = false;
+	for (size_t v = 0; v < views.size() && !fragmented; ++v)
+	{
+		if (bases[v] >= 0) continue;
+		const uint32_t count = views[v].layers;
+		for (const bool emptyOnly : {true, false})
+		{
+			for (uint32_t b = 0; bases[v] < 0 && b + count <= MAX_SHADOW_LAYERS;
+				 ++b)
+				if (is_free(b, count, emptyOnly)) claim(v, b);
+		}
+		fragmented = bases[v] < 0;
+	}
+
+	// A point light needs six adjacent layers. If the holes are too scattered,
+	// pack everything from layer 0; the caller guarantees the total fits.
+	if (fragmented)
+	{
+		uint32_t next = 0;
+		for (size_t v = 0; v < views.size(); ++v)
+		{
+			bases[v] = static_cast<int32_t>(next);
+			next += views[v].layers;
+		}
+	}
+
+	shadowLayerInUse_.fill(false);
+	for (size_t v = 0; v < views.size(); ++v)
+	{
+		const uint32_t base = static_cast<uint32_t>(bases[v]);
+		for (uint32_t f = 0; f < views[v].layers; ++f)
+		{
+			const uint32_t layer = base + f;
+			assert(layer < MAX_SHADOW_LAYERS && !shadowLayerInUse_[layer]);
+			shadowLayerInUse_[layer] = true;
+			if (shadowMatrices_[layer] != views[v].matrices[f])
+			{
+				shadowMatrices_[layer] = views[v].matrices[f];
+				shadowLayerDirty_[layer] = true;
+			}
+		}
+		shadowParams_[views[v].light] = {static_cast<float>(bases[v]),
+										 views[v].texelSize};
+	}
+}
+
+void Renderer::update_shadows(const Camera& camera,
 							  const LightEnvironment& lights)
 {
-	shadowLayerCount_ = 0;
+	invalidate_stale_shadow_layers();
+	shadowLayerInUse_.fill(false);
+
 	auto gpuLights = lights.pack_gpu_lights();
 	if (gpuLights.size() > MAX_LIGHTS) gpuLights.resize(MAX_LIGHTS);
 	shadowParams_.assign(gpuLights.size(), glm::vec2(-1.0f, 0.0f));
@@ -2820,7 +2971,7 @@ void Renderer::update_shadows(const glm::vec3& cameraPos,
 	{
 		const GPULight& l = gpuLights[i];
 		if (type_of(l) == LightType::Directional) return FLT_MAX;
-		const glm::vec3 d = glm::vec3(l.positionAndType) - cameraPos;
+		const glm::vec3 d = glm::vec3(l.positionAndType) - camera.position;
 		return l.colorAndIntensity.w / (glm::dot(d, d) + 1.0f);
 	};
 	std::vector<uint32_t> order(gpuLights.size());
@@ -2828,24 +2979,37 @@ void Renderer::update_shadows(const glm::vec3& cameraPos,
 	std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b)
 					 { return score(a) > score(b); });
 
+	const float aspect = static_cast<float>(swapchainExtent_.width) /
+						 static_cast<float>(swapchainExtent_.height);
+	const glm::mat4 cameraViewProj =
+		glm::perspectiveRH_ZO(glm::radians(camera.fov), aspect, CAMERA_NEAR,
+							  CAMERA_FAR) *
+		camera.view_matrix();
+
 	const float mapSize = static_cast<float>(SHADOW_MAP_SIZE);
-	uint32_t casters = 0;
+	std::vector<ShadowView> views;
+	uint32_t layerTotal = 0;
 	for (uint32_t i : order)
 	{
-		if (casters == MAX_SHADOW_CASTERS) break;
+		if (views.size() == MAX_SHADOW_CASTERS) break;
 		const GPULight& l = gpuLights[i];
 		const LightType type = type_of(l);
 		const uint32_t layers = type == LightType::Point ? 6 : 1;
 		if (l.colorAndIntensity.w <= 0.0f ||
-			shadowLayerCount_ + layers > MAX_SHADOW_LAYERS)
+			layerTotal + layers > MAX_SHADOW_LAYERS)
+			continue;
+		// Light reaches zero at its radius, so a sphere the camera cannot see
+		// lights no visible pixel.
+		if (type != LightType::Directional &&
+			sphere_outside_clip(glm::vec3(l.positionAndType),
+								l.directionAndRadius.w, cameraViewProj))
 			continue;
 
-		const uint32_t base = shadowLayerCount_;
+		ShadowView view{i, layers, 0.0f, {}};
 		const glm::vec3 pos(l.positionAndType);
 		const glm::vec3 dir(l.directionAndRadius);
 		const float range =
 			std::max(l.directionAndRadius.w, SHADOW_NEAR * 2.0f);
-		float texelSize = 0.0f;
 
 		// Explicit _ZO: renderer.h includes GLM before the zero-to-one define.
 		if (type == LightType::Directional)
@@ -2855,21 +3019,19 @@ void Renderer::update_shadows(const glm::vec3& cameraPos,
 			const glm::vec3 center = (sceneBounds.min + sceneBounds.max) * 0.5f;
 			const float r =
 				std::max(glm::length(sceneBounds.max - center) * 1.01f, 0.1f);
-			shadowMatrices_[base] =
-				glm::orthoRH_ZO(-r, r, -r, r, 0.0f, 2.0f * r) *
-				shadow_look(center - dir * r, dir);
-			texelSize = 2.0f * r / mapSize;
+			view.matrices[0] = glm::orthoRH_ZO(-r, r, -r, r, 0.0f, 2.0f * r) *
+							   shadow_look(center - dir * r, dir);
+			view.texelSize = 2.0f * r / mapSize;
 		}
 		else if (type == LightType::Spot)
 		{
 			const float halfAngle =
 				glm::clamp(std::acos(glm::clamp(l.coneParams.y, -1.0f, 1.0f)),
 						   glm::radians(1.0f), glm::radians(85.0f));
-			shadowMatrices_[base] =
-				glm::perspectiveRH_ZO(2.0f * halfAngle, 1.0f, SHADOW_NEAR,
-									  range) *
-				shadow_look(pos, dir);
-			texelSize = 2.0f * std::tan(halfAngle) / mapSize;
+			view.matrices[0] = glm::perspectiveRH_ZO(2.0f * halfAngle, 1.0f,
+													 SHADOW_NEAR, range) *
+							   shadow_look(pos, dir);
+			view.texelSize = 2.0f * std::tan(halfAngle) / mapSize;
 		}
 		else
 		{
@@ -2881,20 +3043,19 @@ void Renderer::update_shadows(const glm::vec3& cameraPos,
 				glm::vec3(1, 0, 0),	 glm::vec3(-1, 0, 0), glm::vec3(0, 1, 0),
 				glm::vec3(0, -1, 0), glm::vec3(0, 0, 1),  glm::vec3(0, 0, -1)};
 			for (uint32_t f = 0; f < 6; ++f)
-				shadowMatrices_[base + f] = proj * shadow_look(pos, faces[f]);
-			texelSize = 2.0f * tanHalf / mapSize;
+				view.matrices[f] = proj * shadow_look(pos, faces[f]);
+			view.texelSize = 2.0f * tanHalf / mapSize;
 		}
 
-		shadowParams_[i] = {static_cast<float>(base), texelSize};
-		shadowLayerCount_ += layers;
-		++casters;
+		views.push_back(view);
+		layerTotal += layers;
 	}
+
+	place_shadow_views(views);
 }
 
 void Renderer::draw_shadow_maps(VkCommandBuffer cmd)
 {
-	if (shadowLayerCount_ == 0) return;
-
 	const float mapSize = static_cast<float>(SHADOW_MAP_SIZE);
 	VkViewport vp{0, 0, mapSize, mapSize, 0.0f, 1.0f};
 	VkRect2D scissor{{0, 0}, {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE}};
@@ -2904,8 +3065,11 @@ void Renderer::draw_shadow_maps(VkCommandBuffer cmd)
 	VkClearValue clear{};
 	clear.depthStencil = {1.0f, 0};
 
-	for (uint32_t layer = 0; layer < shadowLayerCount_; ++layer)
+	for (uint32_t layer = 0; layer < MAX_SHADOW_LAYERS; ++layer)
 	{
+		if (!shadowLayerInUse_[layer] || !shadowLayerDirty_[layer]) continue;
+		shadowLayerDirty_[layer] = false;
+
 		VkRenderPassBeginInfo rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
 		rpInfo.renderPass = shadowRenderPass_;
 		rpInfo.framebuffer = shadowFramebuffers_[layer];

@@ -337,7 +337,7 @@ void App::main_loop()
 		ImGui::Render();
 
 		// --- Draw ------------------------------------------------------------
-		renderer.update_shadows(camera.position, lights);
+		renderer.update_shadows(camera, lights);
 		auto frame = renderer.begin_frame();
 		if (!frame) continue;  // swapchain was recreated
 

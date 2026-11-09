@@ -21,6 +21,7 @@ layout(set = 0, binding = 0) uniform FrameUBO {
     uint  tileCountY;
     uint  screenWidth;
     uint  screenHeight;
+    uint  tileCullingOff;
     mat4  shadowMatrices[MAX_SHADOW_LAYERS];
 } frame;
 
@@ -186,6 +187,13 @@ float lightShadow(GPULight light, uint lightType, vec3 L, float dist)
     return sampleShadowLayer(layer, pos);
 }
 
+// Skips the shadow taps when the light adds nothing to this fragment.
+vec3 applyShadow(vec3 radiance, GPULight light, uint lightType, vec3 L, float dist)
+{
+    if (radiance == vec3(0.0)) return radiance;
+    return radiance * lightShadow(light, lightType, L, dist);
+}
+
 // =============================================================================
 // Main
 // =============================================================================
@@ -221,10 +229,9 @@ void main()
     uint tileOffset = tileIndex * (1 + 256);  // count + MAX_LIGHTS_PER_TILE indices
     uint tileLightCount = tileData[tileOffset];
 
-    // Fallback: if tile culling produced no results, iterate all lights directly.
     // Non-opaque surfaces are not in the depth prepass, so tile depth bounds
-    // say nothing about them.
-    bool useTiles = (tileLightCount > 0) && matFactors.alphaMode == ALPHA_OPAQUE;
+    // say nothing about them. Neither do they without a prepass at all.
+    bool useTiles = frame.tileCullingOff == 0u && matFactors.alphaMode == ALPHA_OPAQUE;
     uint loopCount = useTiles ? tileLightCount : frame.lightCount;
 
     vec3 Lo = vec3(0.0);
@@ -241,9 +248,9 @@ void main()
         if (lightType == LIGHT_DIRECTIONAL)
         {
             vec3 L = normalize(-light.directionAndRadius.xyz);
-            Lo += evaluateBRDF(N, V, L, albedo, metallic, roughness, F0,
-                               lightColor, lightIntensity) *
-                  lightShadow(light, lightType, L, 1.0);
+            Lo += applyShadow(evaluateBRDF(N, V, L, albedo, metallic, roughness, F0,
+                                           lightColor, lightIntensity),
+                              light, lightType, L, 1.0);
         }
         else if (lightType == LIGHT_POINT)
         {
@@ -252,9 +259,9 @@ void main()
             vec3 L = toLight / dist;
             float radius = light.directionAndRadius.w;
             float atten = attenuate(dist, radius);
-            Lo += evaluateBRDF(N, V, L, albedo, metallic, roughness, F0,
-                               lightColor, lightIntensity * atten) *
-                  lightShadow(light, lightType, L, dist);
+            Lo += applyShadow(evaluateBRDF(N, V, L, albedo, metallic, roughness, F0,
+                                           lightColor, lightIntensity * atten),
+                              light, lightType, L, dist);
         }
         else if (lightType == LIGHT_SPOT)
         {
@@ -270,9 +277,9 @@ void main()
             float cosOuter = light.coneParams.y;
             float spotFactor = smoothstep(cosOuter, cosInner, cosAngle);
 
-            Lo += evaluateBRDF(N, V, L, albedo, metallic, roughness, F0,
-                               lightColor, lightIntensity * atten * spotFactor) *
-                  lightShadow(light, lightType, L, dist);
+            Lo += applyShadow(evaluateBRDF(N, V, L, albedo, metallic, roughness, F0,
+                                           lightColor, lightIntensity * atten * spotFactor),
+                              light, lightType, L, dist);
         }
     }
 
