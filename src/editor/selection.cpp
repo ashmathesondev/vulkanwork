@@ -77,6 +77,59 @@ bool Selection::ray_aabb(const Ray& ray, const AABB& aabb,
 	return tOut >= 0.0f;
 }
 
+// Nearest two-sided hit against the mesh triangles. The local direction stays
+// unnormalized so that t is already a world-space distance along the ray.
+// shortcut: tests every triangle per click, add a BVH if clicks start hitching.
+static bool ray_triangles(const Ray& ray, const Mesh& mesh,
+						  const glm::mat4& transform, float& tOut)
+{
+	glm::mat4 inv = glm::inverse(transform);
+	glm::vec3 origin(inv * glm::vec4(ray.origin, 1.0f));
+	glm::vec3 dir(inv * glm::vec4(ray.direction, 0.0f));
+
+	float best = std::numeric_limits<float>::max();
+	bool hit = false;
+	for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3)
+	{
+		uint32_t ia = mesh.indices[i];
+		uint32_t ib = mesh.indices[i + 1];
+		uint32_t ic = mesh.indices[i + 2];
+		// Indices come from the model file unchecked
+		if (ia >= mesh.vertices.size() || ib >= mesh.vertices.size() ||
+			ic >= mesh.vertices.size())
+			continue;
+
+		const glm::vec3& a = mesh.vertices[ia].pos;
+		glm::vec3 e1 = mesh.vertices[ib].pos - a;
+		glm::vec3 e2 = mesh.vertices[ic].pos - a;
+
+		// Moller-Trumbore. No epsilon: valid determinants scale with the
+		// node transform and triangle size, so tiny triangles must pass.
+		glm::vec3 p = glm::cross(dir, e2);
+		float det = glm::dot(e1, p);
+		if (det == 0.0f) continue;
+		float invDet = 1.0f / det;
+
+		glm::vec3 s = origin - a;
+		float u = glm::dot(s, p) * invDet;
+		if (u < 0.0f || u > 1.0f) continue;
+
+		glm::vec3 q = glm::cross(s, e1);
+		float v = glm::dot(dir, q) * invDet;
+		if (v < 0.0f || u + v > 1.0f) continue;
+
+		float t = glm::dot(e2, q) * invDet;
+		if (t >= 0.0f && t < best)
+		{
+			best = t;
+			hit = true;
+		}
+	}
+
+	if (hit) tOut = best;
+	return hit;
+}
+
 void Selection::pick(float mouseX, float mouseY, float screenW, float screenH,
 					 const glm::mat4& view, const glm::mat4& proj,
 					 const SceneGraph& sceneGraph,
@@ -115,14 +168,16 @@ void Selection::pick(float mouseX, float mouseY, float screenW, float screenH,
 		uint32_t mi = node.meshIndex.value();
 		if (mi >= meshes.size()) continue;
 
+		// The box only rejects: overlapping boxes must not decide the winner.
+		float boxT = 0.0f;
 		float t = 0.0f;
-		if (ray_aabb(ray, meshes[mi].localBounds, node.worldTransform, t))
+		if (ray_aabb(ray, meshes[mi].localBounds, node.worldTransform, boxT) &&
+			boxT < closestT &&
+			ray_triangles(ray, meshes[mi], node.worldTransform, t) &&
+			t < closestT)
 		{
-			if (t < closestT)
-			{
-				closestT = t;
-				closestNode = i;
-			}
+			closestT = t;
+			closestNode = i;
 		}
 	}
 

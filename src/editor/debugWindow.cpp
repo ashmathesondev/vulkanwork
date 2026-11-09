@@ -280,6 +280,7 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 	ImGui::Separator();
 	ImGui::Checkbox("Show Tile Heatmap", &renderer.showHeatmap_);
 	ImGui::Checkbox("Show Light Wireframes", &renderer.showDebugLines_);
+	ImGui::Checkbox("Show Selection Bounds", &renderer.showSelectionBounds_);
 	ImGui::Separator();
 	ImGui::Text("WASD + Space/Ctrl: move");
 	ImGui::Text("Right-click + drag: look");

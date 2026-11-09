@@ -44,7 +44,6 @@ struct App
 
 	// State
 	bool mouseCaptured = false;
-	bool leftClickHeld = false;
 	bool escapeWasDown = false;
 	bool firstMouse = true;
 	double lastMouseX = 0.0;

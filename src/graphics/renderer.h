@@ -55,7 +55,8 @@ struct Renderer
 	std::optional<FrameContext> begin_frame();
 	void update_uniforms(const Camera& camera, float time,
 						 const LightEnvironment& lights);
-	void update_debug_lines(const LightEnvironment& lights);
+	void update_debug_lines(const LightEnvironment& lights,
+							std::optional<uint32_t> selectedMesh);
 	void draw_scene(VkCommandBuffer cmd);
 	void end_frame(const FrameContext& ctx);
 
@@ -84,6 +85,7 @@ struct Renderer
 
 	// Debug line visualization toggle (controlled from ImGui)
 	bool showDebugLines_ = true;
+	bool showSelectionBounds_ = true;
 
 	// Debug toggles (controlled from ImGui)
 	bool debugSkipDepthPrepass_ = false;

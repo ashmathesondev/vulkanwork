@@ -500,8 +500,8 @@ void Renderer::draw_scene(VkCommandBuffer cmd)
 		vkCmdDraw(cmd, 3, 1, 0, 0);
 	}
 
-	// Debug light wireframes
-	if (showDebugLines_ && debugLineVertexCount_ > 0)
+	// Debug lines: light wireframes and selection bounds
+	if (debugLineVertexCount_ > 0)
 	{
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
 						  debugLinePipeline_);
@@ -3205,9 +3205,39 @@ void Renderer::create_debug_line_buffers()
 	}
 }
 
-void Renderer::update_debug_lines(const LightEnvironment& lights)
+void Renderer::update_debug_lines(const LightEnvironment& lights,
+								  std::optional<uint32_t> selectedMesh)
 {
-	auto verts = generate_light_lines(lights);
+	std::vector<LineVertex> verts;
+	// Bounds go first so a full buffer truncates light wireframes instead
+	if (showSelectionBounds_ && selectedMesh.has_value() &&
+		*selectedMesh < meshes_.size() &&
+		!aabb_empty(meshes_[*selectedMesh].localBounds))
+	{
+		const Mesh& mesh = meshes_[*selectedMesh];
+		const glm::vec3 color(1.0f, 0.8f, 0.0f);
+		auto corner = [&](int i)
+		{
+			return glm::vec3(mesh.transform *
+							 glm::vec4(aabb_corner(mesh.localBounds, i), 1.0f));
+		};
+		// Each edge joins corners whose indices differ in exactly one bit
+		for (int i = 0; i < 8; ++i)
+		{
+			for (int bit : {1, 2, 4})
+			{
+				if (i & bit) continue;
+				verts.push_back({corner(i), color});
+				verts.push_back({corner(i | bit), color});
+			}
+		}
+	}
+	if (showDebugLines_)
+	{
+		auto lightVerts = generate_light_lines(lights);
+		verts.insert(verts.end(), lightVerts.begin(), lightVerts.end());
+	}
+
 	constexpr VkDeviceSize bufSize = 64 * 1024;
 	uint32_t maxVerts = static_cast<uint32_t>(bufSize / sizeof(LineVertex));
 	debugLineVertexCount_ = static_cast<uint32_t>(
