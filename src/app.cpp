@@ -226,22 +226,18 @@ void App::main_loop()
 				do_import_splat(ImGuiFileDialog::Instance()->GetFilePathName());
 			ImGuiFileDialog::Instance()->Close();
 		}
+		if (ImGuiFileDialog::Instance()->Display(
+				"PickTexture", ImGuiWindowFlags_NoCollapse, dialogMinSize))
+		{
+			if (ImGuiFileDialog::Instance()->IsOk())
+				do_pick_texture(ImGuiFileDialog::Instance()->GetFilePathName());
+			ImGuiFileDialog::Instance()->Close();
+		}
 
 		gizmo.begin_frame();
 
-		debugWindow.draw(renderer, lights, selection, gizmo, sceneGraph);
-
-		// Handle import/delete requests from debug window
-		if (debugWindow.importRequested)
-		{
-			debugWindow.importRequested = false;
-			showImportDialog_ = true;
-		}
-		if (debugWindow.importSplatRequested)
-		{
-			debugWindow.importSplatRequested = false;
-			showSplatImportDialog_ = true;
-		}
+		// Deletes run before the inspector draws, because deleting frees
+		// textures that this frame's thumbnails would otherwise reference.
 		if (debugWindow.deleteRequested)
 		{
 			debugWindow.deleteRequested = false;
@@ -256,6 +252,31 @@ void App::main_loop()
 			do_delete_selected();
 		}
 
+		debugWindow.draw(renderer, lights, selection, gizmo, sceneGraph);
+
+		// Handle import/delete requests from debug window
+		if (debugWindow.importRequested)
+		{
+			debugWindow.importRequested = false;
+			showImportDialog_ = true;
+		}
+		if (debugWindow.importSplatRequested)
+		{
+			debugWindow.importSplatRequested = false;
+			showSplatImportDialog_ = true;
+		}
+		if (debugWindow.textureBrowseRequested.has_value())
+		{
+			textureTarget_ = *debugWindow.textureBrowseRequested;
+			debugWindow.textureBrowseRequested.reset();
+			debugWindow.textureError.clear();
+			IGFD::FileDialogConfig config;
+			config.path = ".";
+			config.flags = ImGuiFileDialogFlags_Modal;
+			ImGuiFileDialog::Instance()->OpenDialog(
+				"PickTexture", "Select Texture", ".png,.jpg,.jpeg,.tga,.bmp",
+				config);
+		}
 		// --- Gizmo manipulation ------------------------------------------
 		if (selection.selectedNode.has_value())
 		{
@@ -566,6 +587,24 @@ void App::new_scene()
 	modelPath.clear();
 }
 
+void App::do_pick_texture(const std::string& path)
+{
+	auto [matIdx, slot] = textureTarget_;
+	if (!renderer.set_material_texture(matIdx, slot, path))
+	{
+		debugWindow.textureError = "Could not load " + path + " (see log)";
+		return;
+	}
+
+	// The emissive map is multiplied by this factor, so black would hide it.
+	Material& mat = renderer.materials()[matIdx];
+	if (slot == TextureSlot::Emissive && mat.emissiveFactor == glm::vec3(0.0f))
+	{
+		mat.emissiveFactor = glm::vec3(1.0f);
+		renderer.update_material(matIdx);
+	}
+}
+
 void App::do_save_scene(const std::string& path)
 {
 	LOG_INFO("Saving scene to: %s", path.c_str());
@@ -578,6 +617,17 @@ void App::do_save_scene(const std::string& path)
 		camera.position.x, camera.position.y, camera.position.z, camera.yaw,
 		camera.pitch, camera.fov);
 	data.lights = lights;
+	const auto& meshes = renderer.meshes();
+	const auto& materials = renderer.materials();
+	for (uint32_t i = 0; i < static_cast<uint32_t>(sceneGraph.nodes.size());
+		 ++i)
+	{
+		const auto& meshIdx = sceneGraph.nodes[i].meshIndex;
+		if (!meshIdx.has_value() || *meshIdx >= meshes.size()) continue;
+		uint32_t matIdx = meshes[*meshIdx].materialIndex;
+		if (matIdx < materials.size() && materials[matIdx].edited)
+			data.nodeMaterials[i] = materials[matIdx];
+	}
 	if (save_scene_file(path, data))
 	{
 		currentScenePath = path;
@@ -657,6 +707,32 @@ void App::do_load_scene(const std::string& path)
 	}
 
 	sceneGraph = std::move(data.sceneGraph);
+
+	// Materials come from the source models, so saved edits go on top.
+	for (const auto& [nodeIdx, params] : data.nodeMaterials)
+	{
+		if (nodeIdx >= sceneGraph.nodes.size()) continue;
+		const auto& meshIdx = sceneGraph.nodes[nodeIdx].meshIndex;
+		if (!meshIdx.has_value() || *meshIdx >= renderer.meshes().size())
+			continue;
+		uint32_t matIdx = renderer.meshes()[*meshIdx].materialIndex;
+		if (matIdx >= renderer.materials().size()) continue;
+		Material& mat = renderer.materials()[matIdx];
+		static_cast<MaterialParams&>(mat) = params;
+		mat.edited = true;
+		renderer.update_material(matIdx);
+
+		for (size_t i = 0; i < TEXTURE_SLOT_COUNT; ++i)
+		{
+			const auto& texPath = params.textureOverrides[i];
+			if (texPath.has_value() &&
+				!renderer.set_material_texture(
+					matIdx, static_cast<TextureSlot>(i), *texPath))
+				LOG_WARN("Keeping model texture, cannot load '%s'",
+						 texPath->c_str());
+		}
+	}
+
 	camera = data.camera;
 	LOG_INFO(
 		"Restored camera: pos (%.3f, %.3f, %.3f) yaw %.2f pitch %.2f fov %.1f",
@@ -886,12 +962,13 @@ void App::delete_node(uint32_t nodeIdx)
 void App::init_imgui()
 {
 	VkDescriptorPoolSize poolSizes[] = {
-		{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10},
+		{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		 10 + Renderer::MAX_TEXTURE_THUMBNAILS},
 	};
 	VkDescriptorPoolCreateInfo poolCI{
 		VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
 	poolCI.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-	poolCI.maxSets = 10;
+	poolCI.maxSets = 10 + Renderer::MAX_TEXTURE_THUMBNAILS;
 	poolCI.poolSizeCount = 1;
 	poolCI.pPoolSizes = poolSizes;
 	VK_CHECK(vkCreateDescriptorPool(renderer.vk_device(), &poolCI, nullptr,
@@ -928,6 +1005,7 @@ void App::cleanup()
 {
 	save_window_config();
 
+	renderer.release_texture_thumbnails();
 	ImGui_ImplVulkan_Shutdown();
 	platform::imgui_shutdown();
 	ImGui::DestroyContext();

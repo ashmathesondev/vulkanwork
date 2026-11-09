@@ -84,12 +84,14 @@ struct App
 	// Gaussian Splat system
 	std::optional<GaussianSplatSystem> splatSystem_;
 	void do_import_splat(const std::string& path);
+	void do_pick_texture(const std::string& path);
 	bool upload_splat_cloud(SplatComponent& splat);
 	void sync_splats();
 
 	// Scene file operations
 	bool showLoadDialog_ = false;
 	bool showSaveDialog_ = false;
+	std::pair<uint32_t, TextureSlot> textureTarget_{0, TextureSlot::BaseColor};
 	void new_scene();
 	std::string scene_dialog_dir() const;
 	void do_save_scene(const std::string& path);

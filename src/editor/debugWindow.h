@@ -5,7 +5,11 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <utility>
 #include <vector>
+
+#include "graphics/material.h"
 
 struct Renderer;
 struct LightEnvironment;
@@ -21,6 +25,9 @@ struct DebugWindow
 	bool importRequested = false;
 	bool importSplatRequested = false;
 	bool deleteRequested = false;
+	// Material index and slot whose map the user wants to replace
+	std::optional<std::pair<uint32_t, TextureSlot>> textureBrowseRequested;
+	std::string textureError;  // shown under the maps until the next browse
 
    private:
 	void draw_node_tree(SceneGraph& sceneGraph, uint32_t nodeIdx,

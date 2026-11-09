@@ -12,7 +12,7 @@ Layered structure: `main.cpp` → `App` → `Renderer` → graphics subsystems.
 
 **Rendering pipeline:** Forward+ (tiled). Shadow maps → depth prepass → compute light culling (`shaders/light_cull.comp`) → forward PBR pass. Descriptor sets:
 - Set 0 (per-frame): view/proj, camera pos, lighting, tile grid dims
-- Set 1 (per-material): albedo, normal, metallic-roughness textures
+- Set 1 (per-material): base color, metallic-roughness, normal, emissive and occlusion textures, plus a factor UBO. `MaterialParams` in `src/graphics/material.h` holds the factors. Non-opaque materials skip the depth prepass and shade with all lights.
 - Set 2: SSBO of per-tile culled light lists, shadow map array (binding 3)
 
 **Shadows:** every mesh in `Renderer::meshes_` casts and receives. `update_shadows()` picks casters before `begin_frame()`: directional lights first, then the strongest point and spot lights at the camera, up to `MAX_SHADOW_CASTERS` and `MAX_SHADOW_LAYERS` (a point light takes six layers, others one). Other lights stay unshadowed. `FrameUBO::shadowMatrices` holds one matrix per layer, and `GPULight::coneParams.zw` holds the first layer and texel size. Gaussian splats neither cast nor receive.

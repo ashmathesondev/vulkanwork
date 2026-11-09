@@ -6,11 +6,11 @@
 #include "debugLines.h"
 #include "gaussianSplats.h"
 #include "loaders/gltfLoader.h"
+#include "logger.h"
 #include "platform/platform.h"
 
 #ifndef __ANDROID__
 #include <cctype>
-#include <filesystem>
 
 #include "loaders/assimpLoader.h"
 #endif
@@ -21,6 +21,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #define STB_IMAGE_IMPLEMENTATION
+#include <imgui_impl_vulkan.h>
 #include <stb_image.h>
 
 #include <algorithm>
@@ -28,6 +29,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -234,6 +238,7 @@ void Renderer::cleanup()
 
 	// Pipelines
 	vkDestroyPipeline(device_, pbrPipeline_, nullptr);
+	vkDestroyPipeline(device_, pbrBlendPipeline_, nullptr);
 	vkDestroyPipelineLayout(device_, pbrPipelineLayout_, nullptr);
 	vkDestroyPipeline(device_, depthPrepassPipeline_, nullptr);
 	vkDestroyPipelineLayout(device_, depthPrepassPipelineLayout_, nullptr);
@@ -471,7 +476,7 @@ void Renderer::draw_scene(VkCommandBuffer cmd)
 							pbrPipelineLayout_, 2, 1,
 							&lightDescriptorSets_[currentFrame_], 0, nullptr);
 
-	for (const auto& mesh : meshes_)
+	auto draw_mesh = [&](const Mesh& mesh)
 	{
 		// Push model matrix
 		vkCmdPushConstants(cmd, pbrPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT,
@@ -491,6 +496,35 @@ void Renderer::draw_scene(VkCommandBuffer cmd)
 		vkCmdBindIndexBuffer(cmd, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 		vkCmdDrawIndexed(cmd, static_cast<uint32_t>(mesh.indices.size()), 1, 0,
 						 0, 0);
+	};
+
+	// Blended meshes go last, farthest first, after everything they cover.
+	std::vector<std::pair<float, const Mesh*>> blended;
+	for (const auto& mesh : meshes_)
+	{
+		if (!is_blended(mesh))
+		{
+			draw_mesh(mesh);
+			continue;
+		}
+		// shortcut: sorts whole meshes, so intersecting or self-overlapping
+		// blended geometry can show order errors. Upgrade to OIT if it matters.
+		const AABB& b = mesh.localBounds;
+		glm::vec3 center =
+			b.min.x <= b.max.x ? (b.min + b.max) * 0.5f : glm::vec3(0.0f);
+		float viewZ = (lastView_ * mesh.transform * glm::vec4(center, 1.0f)).z;
+		blended.emplace_back(viewZ, &mesh);
+	}
+
+	if (!blended.empty())
+	{
+		// View space looks down -Z, so the smallest z is the farthest mesh.
+		std::sort(blended.begin(), blended.end(),
+				  [](const auto& a, const auto& b)
+				  { return a.first < b.first; });
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+						  pbrBlendPipeline_);
+		for (const auto& [viewZ, mesh] : blended) draw_mesh(*mesh);
 	}
 
 	// Heatmap debug overlay
@@ -959,10 +993,10 @@ void Renderer::create_pbr_descriptor_layouts()
 											 &frameSetLayout_));
 	}
 
-	// Set 1: per-material (4 combined image samplers + 1 UBO for factors)
+	// Set 1: per-material (5 combined image samplers + 1 UBO for factors)
 	{
-		std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
-		for (uint32_t i = 0; i < 4; ++i)
+		std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
+		for (uint32_t i = 0; i < bindings.size(); ++i)
 		{
 			bindings[i].binding = i;
 			bindings[i].descriptorType =
@@ -1097,6 +1131,18 @@ void Renderer::create_pbr_pipeline()
 
 	VK_CHECK(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr,
 									   &pbrPipeline_));
+
+	// Alpha-blended variant: same layout, tests depth but does not write it.
+	ds.depthWriteEnable = VK_FALSE;
+	blendAtt.blendEnable = VK_TRUE;
+	blendAtt.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+	blendAtt.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	blendAtt.colorBlendOp = VK_BLEND_OP_ADD;
+	blendAtt.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	blendAtt.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	blendAtt.alphaBlendOp = VK_BLEND_OP_ADD;
+	VK_CHECK(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr,
+									   &pbrBlendPipeline_));
 
 	vkDestroyShaderModule(device_, fragMod, nullptr);
 	vkDestroyShaderModule(device_, vertMod, nullptr);
@@ -1415,7 +1461,7 @@ void Renderer::create_material_descriptor_pool(uint32_t materialCount)
 	std::array<VkDescriptorPoolSize, 2> poolSizes{};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	poolSizes[0].descriptorCount =
-		materialCount * 4;	// 4 samplers per material
+		materialCount * 5;	// 5 samplers per material
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSizes[1].descriptorCount = materialCount;  // 1 factor UBO per material
 
@@ -1438,23 +1484,12 @@ void Renderer::create_material_descriptor(Material& mat)
 	VK_CHECK(vkAllocateDescriptorSets(device_, &ai, &mat.descriptorSet));
 
 	// Create factor UBO
-	MaterialFactorsGPU factors{};
-	factors.baseColorFactor = mat.baseColorFactor;
-	factors.metallicFactor = mat.metallicFactor;
-	factors.roughnessFactor = mat.roughnessFactor;
-	factors.emissiveFactor = glm::vec4(mat.emissiveFactor, 0.0f);
-
 	create_buffer(sizeof(MaterialFactorsGPU),
 				  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 				  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
 					  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 				  mat.factorBuffer, mat.factorMemory);
-
-	void* data;
-	vkMapMemory(device_, mat.factorMemory, 0, sizeof(MaterialFactorsGPU), 0,
-				&data);
-	std::memcpy(data, &factors, sizeof(MaterialFactorsGPU));
-	vkUnmapMemory(device_, mat.factorMemory);
+	write_material_factors(mat);
 
 	auto get_view = [&](int32_t texIndex,
 						const Texture& fallback) -> VkImageView
@@ -1464,7 +1499,7 @@ void Renderer::create_material_descriptor(Material& mat)
 		return fallback.view;
 	};
 
-	VkDescriptorImageInfo imageInfos[4]{};
+	VkDescriptorImageInfo imageInfos[5]{};
 	// 0: baseColor
 	imageInfos[0].sampler = pbrSampler_;
 	imageInfos[0].imageView = get_view(mat.baseColorTexture, defaultWhite_);
@@ -1482,30 +1517,151 @@ void Renderer::create_material_descriptor(Material& mat)
 	imageInfos[3].sampler = pbrSampler_;
 	imageInfos[3].imageView = get_view(mat.emissiveTexture, defaultWhite_);
 	imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	// 4: occlusion, shader binding 5
+	imageInfos[4].sampler = pbrSampler_;
+	imageInfos[4].imageView = get_view(mat.occlusionTexture, defaultWhite_);
+	imageInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
 	VkDescriptorBufferInfo factorBufInfo{mat.factorBuffer, 0,
 										 sizeof(MaterialFactorsGPU)};
 
-	std::array<VkWriteDescriptorSet, 5> writes{};
-	for (uint32_t i = 0; i < 4; ++i)
+	const uint32_t samplerBindings[5] = {0, 1, 2, 3, 5};
+	std::array<VkWriteDescriptorSet, 6> writes{};
+	for (uint32_t i = 0; i < 5; ++i)
 	{
 		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[i].dstSet = mat.descriptorSet;
-		writes[i].dstBinding = i;
+		writes[i].dstBinding = samplerBindings[i];
 		writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		writes[i].descriptorCount = 1;
 		writes[i].pImageInfo = &imageInfos[i];
 	}
 	// Binding 4: material factors UBO
-	writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[4].dstSet = mat.descriptorSet;
-	writes[4].dstBinding = 4;
-	writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	writes[4].descriptorCount = 1;
-	writes[4].pBufferInfo = &factorBufInfo;
+	writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[5].dstSet = mat.descriptorSet;
+	writes[5].dstBinding = 4;
+	writes[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	writes[5].descriptorCount = 1;
+	writes[5].pBufferInfo = &factorBufInfo;
 
 	vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()),
 						   writes.data(), 0, nullptr);
+}
+
+void Renderer::write_material_factors(const Material& mat)
+{
+	MaterialFactorsGPU factors{};
+	factors.baseColorFactor = mat.baseColorFactor;
+	factors.metallicFactor = mat.metallicFactor;
+	factors.roughnessFactor = mat.roughnessFactor;
+	factors.normalScale = mat.normalScale;
+	factors.occlusionStrength = mat.occlusionStrength;
+	factors.emissiveFactor = glm::vec4(mat.emissiveFactor, 0.0f);
+	factors.alphaCutoff = mat.alphaCutoff;
+	factors.alphaMode = static_cast<uint32_t>(mat.alphaMode);
+
+	void* data;
+	VK_CHECK(vkMapMemory(device_, mat.factorMemory, 0,
+						 sizeof(MaterialFactorsGPU), 0, &data));
+	std::memcpy(data, &factors, sizeof(MaterialFactorsGPU));
+	vkUnmapMemory(device_, mat.factorMemory);
+}
+
+void Renderer::update_material(uint32_t materialIdx)
+{
+	if (materialIdx >= materials_.size()) return;
+
+	// shortcut: one factor UBO is shared by all frames in flight, so each edit
+	// waits for the GPU. Use per-frame UBOs if edits ever need to be
+	// stall-free.
+	vkDeviceWaitIdle(device_);
+	write_material_factors(materials_[materialIdx]);
+}
+
+// Returns the file's index in textures_, or -1 if it cannot be used.
+int32_t Renderer::find_or_load_texture(const std::string& path, bool srgb)
+{
+	for (size_t i = 0; i < textures_.size(); ++i)
+		if (textures_[i].sourcePath == path && textures_[i].isSrgb == srgb)
+			return static_cast<int32_t>(i);
+
+	std::ifstream f(
+		std::filesystem::path(std::u8string(path.begin(), path.end())),
+		std::ios::binary);
+	std::vector<stbi_uc> bytes((std::istreambuf_iterator<char>(f)),
+							   std::istreambuf_iterator<char>());
+	if (bytes.empty() ||
+		bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+	{
+		LOG_ERROR("Cannot read texture file '%s'", path.c_str());
+		return -1;
+	}
+
+	int w = 0, h = 0, channels = 0;
+	stbi_uc* pixels =
+		stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w,
+							  &h, &channels, STBI_rgb_alpha);
+	if (!pixels)
+	{
+		LOG_ERROR("Cannot decode texture '%s': %s", path.c_str(),
+				  stbi_failure_reason());
+		return -1;
+	}
+
+	VkPhysicalDeviceProperties props;
+	vkGetPhysicalDeviceProperties(physicalDevice_, &props);
+	if (static_cast<uint32_t>(std::max(w, h)) >
+		props.limits.maxImageDimension2D)
+	{
+		LOG_ERROR("Texture '%s' is %d x %d, over the GPU limit of %u",
+				  path.c_str(), w, h, props.limits.maxImageDimension2D);
+		stbi_image_free(pixels);
+		return -1;
+	}
+
+	Texture tex;
+	tex.width = static_cast<uint32_t>(w);
+	tex.height = static_cast<uint32_t>(h);
+	tex.isSrgb = srgb;
+	tex.sourcePath = path;
+	tex.pixels.assign(pixels, pixels + static_cast<size_t>(w) * h * 4);
+	stbi_image_free(pixels);
+
+	upload_texture(tex);
+	textures_.push_back(std::move(tex));
+	return static_cast<int32_t>(textures_.size()) - 1;
+}
+
+bool Renderer::set_material_texture(uint32_t materialIdx, TextureSlot slot,
+									const std::string& path)
+{
+	if (materialIdx >= materials_.size()) return false;
+
+	int32_t texIdx = -1;
+	if (!path.empty())
+	{
+		bool srgb =
+			slot == TextureSlot::BaseColor || slot == TextureSlot::Emissive;
+		texIdx = find_or_load_texture(path, srgb);
+		if (texIdx < 0) return false;
+	}
+
+	// shortcut: a replaced texture stays resident until the scene unloads.
+	// Compact textures_ here if long editing sessions run out of GPU memory.
+	Material& mat = materials_[materialIdx];
+	mat.texture(slot) = texIdx;
+	mat.textureOverrides[static_cast<size_t>(slot)] = path;
+	mat.edited = true;
+
+	vkDeviceWaitIdle(device_);
+	rebuild_material_descriptors();
+	return true;
+}
+
+bool Renderer::is_blended(const Mesh& mesh) const
+{
+	return mesh.materialIndex < materials_.size() &&
+		   materials_[mesh.materialIndex].alphaMode == AlphaMode::Blend;
 }
 
 // =============================================================================
@@ -1752,6 +1908,8 @@ std::vector<ImportedNode> Renderer::import_gltf(const std::string& path)
 			mat.normalTexture += static_cast<int32_t>(texOffset);
 		if (mat.emissiveTexture >= 0)
 			mat.emissiveTexture += static_cast<int32_t>(texOffset);
+		if (mat.occlusionTexture >= 0)
+			mat.occlusionTexture += static_cast<int32_t>(texOffset);
 	}
 
 	// Offset mesh material indices, upload, then append
@@ -1812,6 +1970,7 @@ void Renderer::delete_mesh(uint32_t meshIdx)
 			markTex(materials_[i].metallicRoughnessTexture);
 			markTex(materials_[i].normalTexture);
 			markTex(materials_[i].emissiveTexture);
+			markTex(materials_[i].occlusionTexture);
 		}
 	}
 
@@ -1844,6 +2003,7 @@ void Renderer::delete_mesh(uint32_t meshIdx)
 		markTex(mat.metallicRoughnessTexture);
 		markTex(mat.normalTexture);
 		markTex(mat.emissiveTexture);
+		markTex(mat.occlusionTexture);
 	}
 
 	// Destroy unreferenced textures (reverse order)
@@ -1883,6 +2043,7 @@ void Renderer::delete_mesh(uint32_t meshIdx)
 		fixTex(mat.metallicRoughnessTexture);
 		fixTex(mat.normalTexture);
 		fixTex(mat.emissiveTexture);
+		fixTex(mat.occlusionTexture);
 	}
 
 	rebuild_material_descriptors();
@@ -2348,6 +2509,12 @@ void Renderer::draw_depth_prepass(VkCommandBuffer cmd)
 
 	for (const auto& mesh : meshes_)
 	{
+		// Cutout and blended surfaces must not hide what is behind them, and
+		// this vertex-only pass cannot evaluate their alpha.
+		if (mesh.materialIndex < materials_.size() &&
+			materials_[mesh.materialIndex].alphaMode != AlphaMode::Opaque)
+			continue;
+
 		vkCmdPushConstants(cmd, depthPrepassPipelineLayout_,
 						   VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4),
 						   &mesh.transform);
@@ -3271,8 +3438,37 @@ void Renderer::update_debug_lines(const LightEnvironment& lights,
 // Cleanup helpers
 // =============================================================================
 
+VkDescriptorSet Renderer::texture_thumbnail(int32_t textureIdx)
+{
+	if (textureIdx < 0 || textureIdx >= static_cast<int32_t>(textures_.size()))
+		return VK_NULL_HANDLE;
+
+	Texture& tex = textures_[textureIdx];
+	if (!tex.thumbnail && thumbnailCount_ < MAX_TEXTURE_THUMBNAILS)
+	{
+		tex.thumbnail = ImGui_ImplVulkan_AddTexture(
+			pbrSampler_, tex.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		++thumbnailCount_;
+	}
+	return tex.thumbnail;
+}
+
+void Renderer::release_thumbnail(Texture& tex)
+{
+	if (!tex.thumbnail) return;
+	ImGui_ImplVulkan_RemoveTexture(tex.thumbnail);
+	tex.thumbnail = VK_NULL_HANDLE;
+	--thumbnailCount_;
+}
+
+void Renderer::release_texture_thumbnails()
+{
+	for (auto& t : textures_) release_thumbnail(t);
+}
+
 void Renderer::destroy_texture(Texture& tex)
 {
+	release_thumbnail(tex);
 	if (tex.view) vkDestroyImageView(device_, tex.view, nullptr);
 	if (tex.image) vkDestroyImage(device_, tex.image, nullptr);
 	if (tex.memory) vkFreeMemory(device_, tex.memory, nullptr);

@@ -30,14 +30,25 @@ layout(set = 1, binding = 1) uniform sampler2D metallicRoughnessMap;
 layout(set = 1, binding = 2) uniform sampler2D normalMap;
 layout(set = 1, binding = 3) uniform sampler2D emissiveMap;
 
+layout(set = 1, binding = 5) uniform sampler2D occlusionMap;
+
 // Per-material factors (set 1, binding 4)
 layout(set = 1, binding = 4) uniform MaterialFactors {
     vec4  baseColorFactor;
     float metallicFactor;
     float roughnessFactor;
-    vec2  _pad0;
+    float normalScale;
+    float occlusionStrength;
     vec4  emissiveFactor;
+    float alphaCutoff;
+    uint  alphaMode;
+    vec2  _pad0;
 } matFactors;
+
+// Keep in sync with AlphaMode in material.h
+const uint ALPHA_OPAQUE = 0;
+const uint ALPHA_MASK   = 1;
+const uint ALPHA_BLEND  = 2;
 
 // Light data (set 2)
 struct GPULight {
@@ -183,13 +194,19 @@ void main()
 {
     // Sample textures and apply material factors
     vec4 baseColor = texture(baseColorMap, fragTexCoord) * matFactors.baseColorFactor;
+    if (matFactors.alphaMode == ALPHA_MASK && baseColor.a < matFactors.alphaCutoff)
+        discard;
+
     vec2 metallicRoughness = texture(metallicRoughnessMap, fragTexCoord).bg;
     float metallic = metallicRoughness.x * matFactors.metallicFactor;
-    float roughness = metallicRoughness.y * matFactors.roughnessFactor;
+    // Roughness 0 makes the GGX distribution divide by zero
+    float roughness = clamp(metallicRoughness.y * matFactors.roughnessFactor, 0.045, 1.0);
     vec3 emissive = texture(emissiveMap, fragTexCoord).rgb * matFactors.emissiveFactor.rgb;
+    float occlusion = mix(1.0, texture(occlusionMap, fragTexCoord).r, matFactors.occlusionStrength);
 
     // Normal mapping
     vec3 tangentNormal = texture(normalMap, fragTexCoord).rgb * 2.0 - 1.0;
+    tangentNormal.xy *= matFactors.normalScale;
     vec3 N = normalize(fragTBN * tangentNormal);
 
     vec3 V = normalize(frame.cameraPos - fragWorldPos);
@@ -204,8 +221,10 @@ void main()
     uint tileOffset = tileIndex * (1 + 256);  // count + MAX_LIGHTS_PER_TILE indices
     uint tileLightCount = tileData[tileOffset];
 
-    // Fallback: if tile culling produced no results, iterate all lights directly
-    bool useTiles = (tileLightCount > 0);
+    // Fallback: if tile culling produced no results, iterate all lights directly.
+    // Non-opaque surfaces are not in the depth prepass, so tile depth bounds
+    // say nothing about them.
+    bool useTiles = (tileLightCount > 0) && matFactors.alphaMode == ALPHA_OPAQUE;
     uint loopCount = useTiles ? tileLightCount : frame.lightCount;
 
     vec3 Lo = vec3(0.0);
@@ -258,7 +277,7 @@ void main()
     }
 
     // Ambient
-    vec3 ambient = frame.ambientColor * albedo;
+    vec3 ambient = frame.ambientColor * albedo * occlusion;
 
     vec3 color = ambient + Lo + emissive;
 

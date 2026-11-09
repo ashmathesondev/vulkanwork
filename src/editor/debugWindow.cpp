@@ -255,6 +255,123 @@ static void draw_light_inspector(LightComponent& light)
 		ImGui::TextDisabled("Direction follows the node's -Z axis (rotate)");
 }
 
+// One map of a material: replace or remove it, then show what it holds.
+static void draw_texture_slot(Renderer& renderer, DebugWindow& window,
+							  uint32_t matIdx, Material& mat, TextureSlot slot,
+							  const char* label)
+{
+	const ImVec2 thumbnailSize(64.0f, 64.0f);
+	ImGui::PushID(static_cast<int>(slot));
+
+	VkDescriptorSet thumbnail = renderer.texture_thumbnail(mat.texture(slot));
+	if (thumbnail)
+		ImGui::Image(reinterpret_cast<ImTextureID>(thumbnail), thumbnailSize);
+	else
+		ImGui::Dummy(thumbnailSize);
+	ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(),
+										ImGui::GetItemRectMax(),
+										ImGui::GetColorU32(ImGuiCol_Border));
+	ImGui::SameLine();
+	ImGui::BeginGroup();
+
+	const auto& textures = renderer.textures();
+	int32_t index = mat.texture(slot);
+	if (index >= 0 && index < static_cast<int32_t>(textures.size()))
+	{
+		const Texture& tex = textures[index];
+		ImGui::Text("%s (%u x %u)", label, tex.width, tex.height);
+
+		std::string origin = !tex.sourcePath.empty() ? tex.sourcePath
+							 : !tex.containerPath.empty()
+								 ? "Embedded in " + tex.containerPath
+								 : "Built-in";
+		// Read-only field, so long paths can be scrolled and copied.
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		ImGui::InputText("##path", origin.data(), origin.size() + 1,
+						 ImGuiInputTextFlags_ReadOnly);
+	}
+	else
+	{
+		ImGui::TextDisabled("%s: none", label);
+	}
+
+	if (ImGui::Button("Browse..."))
+		window.textureBrowseRequested = std::make_pair(matIdx, slot);
+	ImGui::SameLine();
+	ImGui::BeginDisabled(mat.texture(slot) < 0);
+	if (ImGui::Button("Clear"))
+		renderer.set_material_texture(matIdx, slot, std::string{});
+	ImGui::EndDisabled();
+
+	ImGui::EndGroup();
+	ImGui::PopID();
+}
+
+// Editable PBR properties of a mesh node's material.
+static void draw_material_inspector(Renderer& renderer, DebugWindow& window,
+									uint32_t meshIdx)
+{
+	const auto& meshes = renderer.meshes();
+	if (meshIdx >= meshes.size()) return;
+	uint32_t matIdx = meshes[meshIdx].materialIndex;
+	if (matIdx >= renderer.materials().size()) return;
+	Material& mat = renderer.materials()[matIdx];
+
+	ImGui::Separator();
+	ImGui::Text("Material");
+	auto users = std::count_if(meshes.begin(), meshes.end(), [&](const Mesh& m)
+							   { return m.materialIndex == matIdx; });
+	if (users > 1)
+		ImGui::TextDisabled("Shared by %d meshes", static_cast<int>(users));
+
+	const ImGuiSliderFlags clamp = ImGuiSliderFlags_AlwaysClamp;
+	bool changed = ImGui::ColorEdit4("Base Color", &mat.baseColorFactor.x);
+	changed |= ImGui::SliderFloat("Metallic", &mat.metallicFactor, 0.0f, 1.0f,
+								  "%.3f", clamp);
+	changed |= ImGui::SliderFloat("Roughness", &mat.roughnessFactor, 0.0f, 1.0f,
+								  "%.3f", clamp);
+	changed |=
+		ImGui::ColorEdit3("Emissive", &mat.emissiveFactor.x,
+						  ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float);
+	changed |= ImGui::SliderFloat("Normal Strength", &mat.normalScale, 0.0f,
+								  2.0f, "%.3f", clamp);
+	changed |= ImGui::SliderFloat("Occlusion Strength", &mat.occlusionStrength,
+								  0.0f, 1.0f, "%.3f", clamp);
+
+	int alphaMode = static_cast<int>(mat.alphaMode);
+	const char* alphaModes[] = {"Opaque", "Mask", "Blend"};
+	if (ImGui::Combo("Alpha Mode", &alphaMode, alphaModes,
+					 IM_ARRAYSIZE(alphaModes)))
+	{
+		mat.alphaMode = static_cast<AlphaMode>(alphaMode);
+		changed = true;
+	}
+	if (mat.alphaMode == AlphaMode::Mask)
+		changed |= ImGui::SliderFloat("Alpha Cutoff", &mat.alphaCutoff, 0.0f,
+									  1.0f, "%.3f", clamp);
+
+	if (changed)
+	{
+		mat.edited = true;
+		renderer.update_material(matIdx);
+	}
+
+	ImGui::Separator();
+	draw_texture_slot(renderer, window, matIdx, mat, TextureSlot::BaseColor,
+					  "Base Color");
+	draw_texture_slot(renderer, window, matIdx, mat,
+					  TextureSlot::MetallicRoughness, "Metal/Rough");
+	draw_texture_slot(renderer, window, matIdx, mat, TextureSlot::Normal,
+					  "Normal");
+	draw_texture_slot(renderer, window, matIdx, mat, TextureSlot::Occlusion,
+					  "Occlusion");
+	draw_texture_slot(renderer, window, matIdx, mat, TextureSlot::Emissive,
+					  "Emissive");
+	if (!window.textureError.empty())
+		ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s",
+						   window.textureError.c_str());
+}
+
 void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 					   Selection& selection, Gizmo& gizmo,
 					   SceneGraph& sceneGraph)
@@ -511,6 +628,8 @@ void DebugWindow::draw(Renderer& renderer, LightEnvironment& lights,
 							matrixRotation[1], matrixRotation[2]);
 				ImGui::Text("Scale:    %.2f, %.2f, %.2f", matrixScale[0],
 							matrixScale[1], matrixScale[2]);
+				if (node.meshIndex.has_value())
+					draw_material_inspector(renderer, *this, *node.meshIndex);
 			}
 		}
 	}

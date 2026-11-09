@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -490,6 +491,19 @@ static void extract_materials(const tinygltf::Model& model, Scene& scene)
 					  static_cast<float>(mat.emissiveFactor[1]),
 					  static_cast<float>(mat.emissiveFactor[2]));
 
+		if (mat.occlusionTexture.index >= 0)
+			pbr.occlusionTexture =
+				model.textures[mat.occlusionTexture.index].source;
+
+		pbr.normalScale = static_cast<float>(mat.normalTexture.scale);
+		pbr.occlusionStrength =
+			static_cast<float>(mat.occlusionTexture.strength);
+		pbr.alphaCutoff = static_cast<float>(mat.alphaCutoff);
+		if (mat.alphaMode == "MASK")
+			pbr.alphaMode = AlphaMode::Mask;
+		else if (mat.alphaMode == "BLEND")
+			pbr.alphaMode = AlphaMode::Blend;
+
 		scene.materials.push_back(pbr);
 	}
 
@@ -504,11 +518,62 @@ static void extract_materials(const tinygltf::Model& model, Scene& scene)
 // Extract images → CpuTexture
 // =============================================================================
 
-static void extract_textures(const tinygltf::Model& model, Scene& scene)
+// glTF URIs are percent-encoded, so "my%20map.png" names "my map.png".
+static std::string uri_decode(const std::string& uri)
+{
+	auto hex = [](char c)
+	{
+		if (c >= '0' && c <= '9') return c - '0';
+		if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+		if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+		return -1;
+	};
+
+	std::string out;
+	for (size_t i = 0; i < uri.size(); ++i)
+	{
+		if (uri[i] == '%' && i + 2 < uri.size() && hex(uri[i + 1]) >= 0 &&
+			hex(uri[i + 2]) >= 0)
+		{
+			out.push_back(
+				static_cast<char>(hex(uri[i + 1]) * 16 + hex(uri[i + 2])));
+			i += 2;
+		}
+		else
+		{
+			out.push_back(uri[i]);
+		}
+	}
+	return out;
+}
+
+// Full path of an image stored beside the model. For display only.
+static std::string external_image_path(const std::string& modelPath,
+									   const std::string& uri)
+{
+	namespace fs = std::filesystem;
+	std::string decoded = uri_decode(uri);
+	fs::path dir = fs::path(std::u8string(modelPath.begin(), modelPath.end()))
+					   .parent_path();
+	std::u8string full =
+		(dir / fs::path(std::u8string(decoded.begin(), decoded.end())))
+			.lexically_normal()
+			.generic_u8string();
+	return std::string(full.begin(), full.end());
+}
+
+static void extract_textures(const tinygltf::Model& model, Scene& scene,
+							 const std::string& modelPath)
 {
 	for (const auto& img : model.images)
 	{
 		Texture tex;
+
+		if (!img.uri.empty() && img.bufferView < 0 &&
+			img.uri.rfind("data:", 0) != 0)
+			tex.sourcePath = external_image_path(modelPath, img.uri);
+		else
+			tex.containerPath = modelPath;
 
 		if (!img.image.empty() && img.width > 0 && img.height > 0)
 		{
@@ -548,9 +613,12 @@ static void extract_textures(const tinygltf::Model& model, Scene& scene)
 		scene.textures.push_back(std::move(tex));
 	}
 
-	// Mark normal and metallic-roughness textures as non-sRGB
+	// Mark normal, metallic-roughness and occlusion textures as non-sRGB
 	for (const auto& mat : scene.materials)
 	{
+		if (mat.occlusionTexture >= 0 &&
+			mat.occlusionTexture < static_cast<int32_t>(scene.textures.size()))
+			scene.textures[mat.occlusionTexture].isSrgb = false;
 		if (mat.normalTexture >= 0 &&
 			mat.normalTexture < static_cast<int32_t>(scene.textures.size()))
 			scene.textures[mat.normalTexture].isSrgb = false;
@@ -585,7 +653,7 @@ Scene load_gltf(const std::string& path)
 	Scene scene;
 
 	extract_materials(model, scene);
-	extract_textures(model, scene);
+	extract_textures(model, scene, path);
 
 	// Walk scene nodes
 	const auto& gltfScene =

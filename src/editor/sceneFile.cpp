@@ -70,6 +70,111 @@ static bool json_to_light(const json& j, LightComponent& out)
 	return true;
 }
 
+static const char* alpha_mode_name(AlphaMode mode)
+{
+	switch (mode)
+	{
+		case AlphaMode::Mask:
+			return "Mask";
+		case AlphaMode::Blend:
+			return "Blend";
+		default:
+			return "Opaque";
+	}
+}
+
+// In TextureSlot order
+static const char* const TEXTURE_KEYS[TEXTURE_SLOT_COUNT] = {
+	"baseColor", "metallicRoughness", "normal", "occlusion", "emissive"};
+
+static json material_to_json(const MaterialParams& m)
+{
+	const glm::vec4& c = m.baseColorFactor;
+	json j = {
+		{"baseColor", json::array({c.r, c.g, c.b, c.a})},
+		{"metallic", m.metallicFactor},
+		{"roughness", m.roughnessFactor},
+		{"emissive", vec3_to_json(m.emissiveFactor)},
+		{"normalScale", m.normalScale},
+		{"occlusionStrength", m.occlusionStrength},
+		{"alphaMode", alpha_mode_name(m.alphaMode)},
+		{"alphaCutoff", m.alphaCutoff},
+	};
+	json textures = json::object();
+	for (size_t i = 0; i < TEXTURE_SLOT_COUNT; ++i)
+		if (m.textureOverrides[i].has_value())
+			textures[TEXTURE_KEYS[i]] = *m.textureOverrides[i];
+	if (!textures.empty()) j["textures"] = textures;
+	return j;
+}
+
+static bool is_network_path(const std::string& path)
+{
+	auto is_slash = [](char c) { return c == '/' || c == '\\'; };
+	return path.size() >= 2 && is_slash(path[0]) && is_slash(path[1]);
+}
+
+// Returns false on malformed input. Values go straight to the GPU, so they are
+// clamped to the ranges the editor allows.
+static bool json_to_material(const json& j, MaterialParams& out)
+{
+	try
+	{
+		const json& base = j.at("baseColor");
+		const json& emissive = j.at("emissive");
+		if (!base.is_array() || base.size() != 4 || !emissive.is_array() ||
+			emissive.size() != 3)
+			return false;
+
+		for (int i = 0; i < 4; ++i)
+			out.baseColorFactor[i] =
+				glm::clamp(base[i].get<float>(), 0.0f, 1.0f);
+		out.emissiveFactor = glm::max(json_to_vec3(emissive), glm::vec3(0.0f));
+		out.metallicFactor =
+			glm::clamp(j.at("metallic").get<float>(), 0.0f, 1.0f);
+		out.roughnessFactor =
+			glm::clamp(j.at("roughness").get<float>(), 0.0f, 1.0f);
+		out.normalScale = glm::max(j.at("normalScale").get<float>(), 0.0f);
+		out.occlusionStrength =
+			glm::clamp(j.at("occlusionStrength").get<float>(), 0.0f, 1.0f);
+		out.alphaCutoff =
+			glm::clamp(j.at("alphaCutoff").get<float>(), 0.0f, 1.0f);
+
+		std::string mode = j.at("alphaMode").get<std::string>();
+		if (mode == "Mask")
+			out.alphaMode = AlphaMode::Mask;
+		else if (mode == "Blend")
+			out.alphaMode = AlphaMode::Blend;
+		else if (mode == "Opaque")
+			out.alphaMode = AlphaMode::Opaque;
+		else
+			return false;
+
+		if (j.contains("textures"))
+		{
+			const json& textures = j["textures"];
+			for (size_t i = 0; i < TEXTURE_SLOT_COUNT; ++i)
+			{
+				if (!textures.contains(TEXTURE_KEYS[i])) continue;
+				std::string path =
+					textures.at(TEXTURE_KEYS[i]).get<std::string>();
+				// Scene files get shared, and opening a UNC path would make
+				// Windows contact a server chosen by the file.
+				if (is_network_path(path))
+					LOG_WARN("load_scene_file: ignoring network texture '%s'",
+							 path.c_str());
+				else
+					out.textureOverrides[i] = path;
+			}
+		}
+		return true;
+	}
+	catch (const json::exception&)
+	{
+		return false;
+	}
+}
+
 // =============================================================================
 // Save
 // =============================================================================
@@ -112,6 +217,10 @@ bool save_scene_file(const std::string& path, const SceneFileData& data)
 							 : json(nullptr);
 		n["modelPath"] = node.modelPath;
 		n["meshIndexInModel"] = node.meshIndexInModel;
+		auto editedMaterial =
+			data.nodeMaterials.find(static_cast<uint32_t>(nodesArr.size()));
+		if (editedMaterial != data.nodeMaterials.end())
+			n["material"] = material_to_json(editedMaterial->second);
 		n["parent"] =
 			node.parent.has_value() ? json(node.parent.value()) : json(nullptr);
 		if (node.light.has_value()) n["light"] = light_to_json(*node.light);
@@ -275,6 +384,17 @@ bool load_scene_file(const std::string& path, SceneFileData& data)
 
 			node.modelPath = n.value("modelPath", std::string{});
 			node.meshIndexInModel = n.value("meshIndexInModel", 0u);
+
+			if (n.contains("material"))
+			{
+				MaterialParams params;
+				if (json_to_material(n["material"], params))
+					data.nodeMaterials[static_cast<uint32_t>(
+						data.sceneGraph.nodes.size())] = params;
+				else
+					LOG_WARN("load_scene_file: node '%s' has a bad material",
+							 node.name.c_str());
+			}
 
 			if (n.contains("parent") && !n["parent"].is_null())
 				node.parent = n["parent"].get<uint32_t>();

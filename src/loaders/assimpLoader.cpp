@@ -87,8 +87,13 @@ bool load_image_file(const fs::path& path, Texture& tex)
 	std::ifstream f(path, std::ios::binary);
 	std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
 							   std::istreambuf_iterator<char>());
-	return !bytes.empty() &&
-		   decode_image(bytes.data(), static_cast<int>(bytes.size()), tex);
+	if (bytes.empty() ||
+		!decode_image(bytes.data(), static_cast<int>(bytes.size()), tex))
+		return false;
+
+	std::u8string resolved = path.lexically_normal().generic_u8string();
+	tex.sourcePath.assign(resolved.begin(), resolved.end());
+	return true;
 }
 
 // Rooted paths are never opened. They usually name the author's machine, and
@@ -146,6 +151,8 @@ Material convert_material(ImportContext& ctx, const aiMaterial& in)
 	out.baseColorTexture = load_texture(ctx, in, aiTextureType_DIFFUSE, true);
 	out.normalTexture = load_texture(ctx, in, aiTextureType_NORMALS, false);
 	out.emissiveTexture = load_texture(ctx, in, aiTextureType_EMISSIVE, true);
+	out.occlusionTexture =
+		load_texture(ctx, in, aiTextureType_AMBIENT_OCCLUSION, false);
 
 	// Authoring tools ignore the color slot once a texture is connected, and
 	// it is often left black, so it must not tint the texture.
@@ -156,6 +163,9 @@ Material convert_material(ImportContext& ctx, const aiMaterial& in)
 	float opacity = 1.0f;
 	if (in.Get(AI_MATKEY_OPACITY, opacity) != AI_SUCCESS) opacity = color.a;
 	out.baseColorFactor = glm::vec4(color.r, color.g, color.b, opacity);
+	// Exporters often write opacity 0 on solid surfaces, so it must not hide
+	// them.
+	if (opacity > 0.0f && opacity < 1.0f) out.alphaMode = AlphaMode::Blend;
 
 	if (out.emissiveTexture >= 0)
 	{
@@ -285,6 +295,8 @@ Scene load_assimp(const std::string& path)
 
 	for (uint32_t i = 0; i < ai->mNumMaterials; ++i)
 		scene.materials.push_back(convert_material(ctx, *ai->mMaterials[i]));
+	for (auto& tex : scene.textures)
+		if (tex.sourcePath.empty()) tex.containerPath = path;
 
 	std::u8string stem = utf8_path(path).stem().u8string();
 	extract_node(ctx, *ai->mRootNode, glm::mat4{1.0f}, -1,

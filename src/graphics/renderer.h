@@ -95,6 +95,19 @@ struct Renderer
 	// Scene accessors (for selection / gizmo)
 	const std::vector<Mesh>& meshes() const { return meshes_; }
 	std::vector<Mesh>& meshes() { return meshes_; }
+	std::vector<Material>& materials() { return materials_; }
+	const std::vector<Texture>& textures() const { return textures_; }
+	// ImGui preview of a texture, or null for no texture or a full pool.
+	static constexpr uint32_t MAX_TEXTURE_THUMBNAILS = 1024;
+	VkDescriptorSet texture_thumbnail(int32_t textureIdx);
+	// Must run before the ImGui Vulkan backend shuts down.
+	void release_texture_thumbnails();
+	// Pushes the material's edited parameters to the GPU.
+	void update_material(uint32_t materialIdx);
+	// Points a material's map at an image file. An empty path removes the map.
+	// Returns false and changes nothing if the file cannot be used.
+	bool set_material_texture(uint32_t materialIdx, TextureSlot slot,
+							  const std::string& path);
 	const glm::mat4& last_view() const { return lastView_; }
 	const glm::mat4& last_proj() const { return lastProj_; }
 
@@ -178,6 +191,7 @@ struct Renderer
 	VkDescriptorSetLayout lightDataSetLayout_ = VK_NULL_HANDLE;
 	VkPipelineLayout pbrPipelineLayout_ = VK_NULL_HANDLE;
 	VkPipeline pbrPipeline_ = VK_NULL_HANDLE;
+	VkPipeline pbrBlendPipeline_ = VK_NULL_HANDLE;
 
 	// Light culling compute
 	VkPipelineLayout computePipelineLayout_ = VK_NULL_HANDLE;
@@ -323,6 +337,9 @@ struct Renderer
 	// Material descriptors
 	void create_material_descriptor_pool(uint32_t materialCount);
 	void create_material_descriptor(Material& mat);
+	void write_material_factors(const Material& mat);
+	int32_t find_or_load_texture(const std::string& path, bool srgb);
+	bool is_blended(const Mesh& mesh) const;
 	void rebuild_material_descriptors();
 
 	// Swapchain management
@@ -347,5 +364,7 @@ struct Renderer
 	VkFormat find_depth_format();
 	VkShaderModule create_shader_module(const std::vector<char>& code);
 	void destroy_texture(Texture& tex);
+	void release_thumbnail(Texture& tex);
+	uint32_t thumbnailCount_ = 0;
 	void cleanup_light_buffers();
 };
