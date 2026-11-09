@@ -11,6 +11,7 @@
 #include <fstream>
 #include <functional>
 #include <glm/glm.hpp>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -173,8 +174,13 @@ void App::main_loop()
 		{
 			IGFD::FileDialogConfig config;
 			config.path = ".";
+#ifdef __ANDROID__
+			const char* meshFilter = ".gltf,.glb";
+#else
+			const char* meshFilter = ".gltf,.glb,.fbx,.dae";
+#endif
 			ImGuiFileDialog::Instance()->OpenDialog("ImportMesh", "Import Mesh",
-													".gltf,.glb", config);
+													meshFilter, config);
 			showImportDialog_ = false;
 		}
 		if (showSplatImportDialog_)
@@ -258,10 +264,21 @@ void App::main_loop()
 			{
 				auto& node = sceneGraph.nodes[nodeIdx];
 				VkExtent2D ext = renderer.swapchain_extent();
-				gizmo.manipulate(renderer.last_view(), renderer.last_proj(),
-								 node.localTransform, 0.0f, 0.0f,
-								 static_cast<float>(ext.width),
-								 static_cast<float>(ext.height));
+				// The gizmo works in world space, node transforms are relative
+				// to the parent.
+				glm::mat4 parentWorld{1.0f};
+				if (node.parent.has_value() &&
+					*node.parent < sceneGraph.nodes.size())
+					parentWorld = sceneGraph.nodes[*node.parent].worldTransform;
+				glm::mat4 world = parentWorld * node.localTransform;
+				bool changed = gizmo.manipulate(
+					renderer.last_view(), renderer.last_proj(), world, 0.0f,
+					0.0f, static_cast<float>(ext.width),
+					static_cast<float>(ext.height));
+				// A zero-scale parent has no inverse, and would write NaNs
+				if (changed && std::abs(glm::determinant(parentWorld)) >
+								   std::numeric_limits<float>::min())
+					node.localTransform = glm::inverse(parentWorld) * world;
 			}
 		}
 
@@ -698,7 +715,17 @@ void App::do_import_mesh(const std::string& path)
 	LOG_INFO("Importing mesh: %s", path.c_str());
 	uint32_t prevMeshCount = static_cast<uint32_t>(renderer.meshes().size());
 	uint32_t prevNodeCount = static_cast<uint32_t>(sceneGraph.nodes.size());
-	std::vector<ImportedNode> hierarchy = renderer.import_gltf(path);
+	std::vector<ImportedNode> hierarchy;
+	try
+	{
+		hierarchy = renderer.import_gltf(path);
+	}
+	catch (const std::exception& e)
+	{
+		// A bad model file must not take down the editor and unsaved work
+		LOG_ERROR("Import failed: %s", e.what());
+		return;
+	}
 
 	uint32_t newMeshCount = static_cast<uint32_t>(renderer.meshes().size());
 	std::vector<uint32_t> roots = add_imported_hierarchy(hierarchy);

@@ -45,7 +45,7 @@ See [BUILDING.md](BUILDING.md) for prerequisites, every Makefile option, packagi
 
 ## Using the Editor
 
-- **File menu:** New Scene, Load Scene, Save Scene, Save Scene As, Import Mesh (`.gltf`/`.glb`), and Import Gaussian Splat (`.ply`).
+- **File menu:** New Scene, Load Scene, Save Scene, Save Scene As, Import Mesh (`.gltf`/`.glb`, plus `.fbx`/`.dae` on desktop), and Import Gaussian Splat (`.ply`).
 - **Scene Hierarchy:** shows the scene as a tree; imported models keep their node hierarchy. Rename any node inline or with the inspector's Name field. Select a node to edit it there:
   - **Lights:** position, rotation, type, color, intensity, radius and cone angles.
   - **Splats:** switch between Gaussian and Points rendering and set the point size.

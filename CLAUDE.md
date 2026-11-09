@@ -10,7 +10,7 @@ Reference `docs/architecture.md` for detailed architecture documentation.
 
 ## Key Dependencies (via vcpkg)
 
-glfw3, glm, vulkan, imgui, imguizmo, tinygltf, stb, nlohmann-json, lz4
+glfw3, glm, vulkan, imgui, imguizmo, tinygltf, assimp (desktop only), stb, nlohmann-json, lz4
 
 ## Code Style
 
