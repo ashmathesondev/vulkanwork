@@ -306,3 +306,136 @@ The tiled design suits training: per-pixel early termination saves a lot of work
 -   Mip-Splatting (Yu et al., CVPR 2024): anti-aliasing across scales
 -   StopThePop (Radl et al., SIGGRAPH 2024): sorting that reduces popping
 -   `docs/gaussian_splats.md`: this project's implementation, shader by shader
+
+## 15. How Shadows Work in This Renderer
+
+### 15.1 The core idea
+
+A point is in shadow from a light if something sits between it and that light. Shadow mapping answers that question in two steps:
+
+1.  **Render the scene from the light's point of view, keeping only depth.** The result is the shadow map. Each texel records how far the light reaches in that direction before hitting something.
+2.  **While shading a pixel from the camera, ask the light's view about it.** Transform the pixel's world position with the same light matrix. That gives a shadow-map location and the point's own depth from the light. If the point is farther away than the stored depth, something blocked the light.
+
+```
+light
+  \
+   \   #### blocker: the shadow map stores depth 0.30 in this texel
+    \
+     \
+------*------ floor point: its own depth from the light is 0.55
+```
+
+0.55 > 0.30, so the floor point is in shadow. A point on the blocker itself has depth 0.30, equal to the stored value, so it is lit.
+
+The light matrix is the only link between the two steps. Rendering and lookup use the same matrix, so conventions cancel out. The shadow matrices have no Vulkan Y flip, unlike the camera's `proj`, and that is fine: NDC y = -1 lands in row 0 when rendering, and `ndc.y * 0.5 + 0.5` reads row 0 when sampling. For the same reason, the point light's six faces can use any up vector.
+
+Do not confuse the shadow maps with the depth prepass. The prepass stores depth from the *camera* and feeds Forward+ light culling. Shadow maps store depth from each *light*.
+
+### 15.2 What happens each frame
+
+| Step | Where | What it does |
+|---|---|---|
+| Choose lights, build matrices | `Renderer::update_shadows()` (before `begin_frame()`) | Fills `shadowMatrices_` and `shadowParams_` |
+| Render depth from each light | `Renderer::draw_shadow_maps()` (first thing in `begin_frame()`) | One render pass per used layer |
+| Upload to the GPU | `Renderer::update_uniforms()` | Matrices go in `FrameUBO`; first layer and texel size go in `GPULight::coneParams.zw` |
+| Test each pixel | `lightShadow()` and `sampleShadowLayer()` in `pbr.frag` | Returns 1 for lit, 0 for shadowed, and fractions at edges |
+
+The result multiplies only that one light's BRDF term. Ambient and emissive are not shadowed, and every light gets its own test, so a point shadowed from one light can still be lit by another.
+
+### 15.3 Where the depth lives
+
+All shadow maps are layers of one image: a 1024×1024, 36-layer 2D array, using `D32_SFLOAT` with a `D16_UNORM` fallback. Each layer holds one light view. A directional or spot light uses one layer. A point light shines in all directions, so it uses six, one per axis direction.
+
+One `sampler2DArrayShadow` at set 2, binding 3 therefore serves every light type, and a light only needs to store its first layer number. Point lights do not use a cubemap: the shader picks the face itself (section 15.7).
+
+The image costs about 144 MiB with D32 (36 × 1024² × 4 bytes), allocated up front however many lights exist.
+
+### 15.4 Which lights get shadows
+
+Layers are limited, so `update_shadows()` ranks the lights every frame:
+
+-   Directional lights come first, then point and spot lights by `intensity / (distanceToCamera² + 1)`.
+-   Lights are taken in that order, up to 16 casters (`MAX_SHADOW_CASTERS`) and 36 layers (`MAX_SHADOW_LAYERS`). If a point light does not fit in the remaining layers, it is skipped and a later spot light can still take the last layer.
+-   Lights with zero intensity are skipped.
+-   Everything else gets `coneParams.z = -1`, and the shader treats it as always lit. An unselected light shines through walls.
+
+Because the ranking uses the camera position, moving the camera can change which lights are selected, and a light's shadow can pop on or off.
+
+### 15.5 The light matrix for each type
+
+A light's matrix has to frame everything that can cast a shadow onto something that light reaches.
+
+-   **Directional:** Rays are parallel, so the projection is orthographic. The box is fitted to a sphere around all mesh bounds, with radius `r`, and the eye sits at `center - dir * r`. A sphere looks the same from any direction, so rotating the sun does not change the fit. Moving the camera has no effect at all, which means no shimmer while flying around. Moving a mesh can resize the sphere and change the resolution. One texel covers `2r / 1024` world units, so a scene of radius 10 gets about 2 cm per texel if 1 unit is 1 m.
+-   **Spot:** Perspective projection from the light position. The field of view is the outer cone angle (half angle clamped to 1° to 85°), and the far plane is the light's radius.
+-   **Point:** Six perspective views along ±X, ±Y and ±Z in that order, with far plane at the light's radius. The field of view is slightly over 90° (`tanHalf = 1 + 4 / 1024`), giving each face a margin of about 2 texels so filtering at a face edge stays on valid data.
+
+Depth is linear for directional lights. For spot and point lights it is non-linear, like any perspective depth buffer, with most precision near the light.
+
+`texelSize` is the world size of one shadow texel. It is stored directly for directional lights. For spot and point lights the size grows with distance, so it is stored per unit of distance and `pbr.frag` multiplies by the distance to the light.
+
+### 15.6 The shadow pass
+
+`draw_shadow_maps()` runs one depth-only render pass per used layer, clearing to 1.0 and drawing every mesh that survives a test against that layer's frustum. The pipeline is minimal:
+
+-   Vertex shader only (`shadow.vert`), with position as the sole attribute and the light's MVP as a push constant. There is no fragment shader, because only depth is written.
+-   `VK_CULL_MODE_NONE`, so open and single-sided meshes still cast.
+-   Depth bias enabled (section 15.8).
+
+Each light view redraws the scene, so a point light costs up to six full scene passes. Nothing is cached between frames.
+
+### 15.7 The lookup in `pbr.frag`
+
+1.  `lightShadow()` returns 1 right away if the light has no shadow layer.
+2.  It moves the world position slightly off the surface (section 15.8).
+3.  For a point light, it finds the largest component of `position - lightPos`. That axis and its sign select one of the six layers.
+4.  `sampleShadowLayer()` multiplies by the layer's matrix and divides by `w`. Any point outside the light's view counts as lit.
+5.  `ndc.xy * 0.5 + 0.5` gives the UV. `ndc.z` is the depth to compare.
+6.  `texture(shadowMaps, vec4(uv, layer, ndc.z))` does the comparison.
+
+Step 6 looks like an ordinary texture read, but the sampler has `compareEnable` set with `VK_COMPARE_OP_LESS_OR_EQUAL`. The hardware tests `ourDepth <= storedDepth` and returns the pass result instead of the depth. With linear filtering it tests the four nearest texels and blends the four results. Blending the *depths* first and then comparing would be wrong: averaging a wall's depth with the floor behind it gives a depth where nothing exists.
+
+The shader takes nine such samples in a 3×3 grid and averages them. This is percentage-closer filtering (PCF). The answer changes from "lit or not" to "what fraction of nearby samples are lit", which softens the jagged edge of the shadow-map grid. The soft band has a fixed width in texels. Real penumbrae widen with distance from the blocker, and these do not.
+
+### 15.8 Shadow acne, and the two fixes
+
+In theory, a surface point and the stored depth for that same surface are equal. In practice the map is a grid. A texel stores one depth for a patch of surface, and on a slanted surface the points in that patch are at different depths from the light. About half of them end up behind the stored value and shadow themselves, producing stripes known as **shadow acne**. The more a surface slants away from the light, the larger the depth error across one texel.
+
+This renderer uses two fixes together:
+
+-   **Depth bias, in the shadow pass.** `depthBiasConstantFactor = 1.25` and `depthBiasSlopeFactor = 1.75` push the stored depths away from the light. The slope term adds more on triangles that are steep relative to the light.
+-   **Normal offset, in the lookup.** The lookup position moves along the surface normal:
+
+    ```
+    pos = worldPos + normal * texelSize * (1 + 2 * sinθ)      θ = angle between normal and L
+    ```
+
+    The offset is scaled to the size of a shadow texel, so it follows the map's real resolution at that point and is not a magic world-space constant. It is one texel when the surface faces the light, and up to three when the surface is nearly edge-on, because one texel then covers a longer stretch of surface. With a scene radius of 10 and a surface at 45° to the light, the offset is about `0.0195 * 2.41 = 0.047` units.
+
+The normal is the interpolated vertex normal, `fragTBN[2]`, not the normal-mapped `N`. Normal-map detail would make the offset vary from texel to texel for no benefit.
+
+Both fixes are needed because depth bias works in depth-buffer units. Under a perspective light, one unit of that means very different world distances near and far. The normal offset stays in world units.
+
+Too much of either causes **peter-panning**: the shadow detaches from the object where it touches the ground.
+
+### 15.9 Vulkan synchronization
+
+The per-frame buffers exist once per frame in flight, but there is only one shadow image. Frame N+1 must not overwrite it while frame N is still sampling it. The shadow render pass handles this with two subpass dependencies:
+
+-   **External to subpass 0:** depth writes wait for earlier fragment-shader work, which includes the previous frame's shadow sampling.
+-   **Subpass 0 to external:** this frame's sampling waits for the depth writes and can see them.
+
+The pass uses `initialLayout = UNDEFINED`, because the old contents are cleared anyway, and ends in `SHADER_READ_ONLY_OPTIMAL`. Layers with no caster are never rendered, yet the whole array stays bound for sampling, so `create_shadow_resources()` moves every layer to the read layout once at startup.
+
+### 15.10 Limitations and symptoms
+
+The pass ignores materials, so alpha-cutout geometry such as foliage casts solid shadows. Gaussian splats neither cast nor receive. Directional lights have one map for the whole scene, so a very large scene gets blocky shadows. The usual fix is cascaded shadow maps, which fit several maps to slices of the camera's view.
+
+| What you see | Likely cause |
+|---|---|
+| Stripes or speckles on lit surfaces | Acne: too little bias or normal offset |
+| Shadow detached at the contact point | Peter-panning: too much bias or normal offset |
+| Blocky directional shadows | Scene sphere too large for one 1024 map |
+| Light passes through walls | Light was not selected as a caster (section 15.4) |
+| Seam along a point light's face boundary | Margin or face selection does not match the face matrices |
+| Shadow appears or vanishes as the camera moves | Caster selection changed |
+| Mirrored or misplaced shadows | Rendering and lookup do not use the same matrix |
