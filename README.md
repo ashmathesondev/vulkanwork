@@ -1,8 +1,8 @@
 # vulkanwork
 
-A Vulkan renderer and small scene editor, built as a learning project. It renders glTF models with physically based shading under a Forward+ (tiled) light culling pipeline. It also renders 3D Gaussian Splatting captures entirely on the GPU. Dear ImGui and ImGuizmo provide an editor for building, saving and loading scenes.
+A Vulkan renderer and small scene editor, built as a learning project. It renders glTF models with physically based shading under a Forward+ (tiled) light culling pipeline. It also renders 3D Gaussian Splatting captures entirely on the GPU. BUI 0.5.0 provides three docked editor panes and native file browsers for building, saving and loading scenes. Viewport transform handles use the Vulkan renderer.
 
-Runs on Windows and Linux, and on Android (arm64) as a `NativeActivity`.
+The BUI editor currently targets Windows x64 using the SDK in `libs/bui`. Linux and Android builds are unavailable with this native host; they require a platform-specific BUI SDK and host integration.
 
 ## Features
 
@@ -10,6 +10,8 @@ Runs on Windows and Linux, and on Android (arm64) as a `NativeActivity`.
 - **Forward+ lighting:** depth prepass, then a compute shader culls lights into 16×16 pixel tiles, then the shading pass reads only each tile's lights. Directional, point and spot lights are supported, with a tile heatmap and light wireframes for debugging.
 - **3D Gaussian Splatting:** loads standard 3DGS `.ply` files. Splats are projected, colored from spherical harmonics and depth sorted with a GPU radix sort every frame. A cloud can be drawn as alpha-blended Gaussians or as a plain point cloud.
 - **Scene editor:**
+  - **Application menu:** File (scene files and imports), Edit (selection and transforms), Add (lights), View (render toggles), and Window (pane focus, floating, docking and layout reset). Ctrl+N/O/S, Ctrl+Shift+S, and Ctrl+I / Ctrl+Shift+I work in the viewport and panes; text fields keep their editing keys.
+  - **Dockable panes:** drag a Scene/Object, Material, or Options header out to float a resizable window. Drop it over either right-hand dock column to insert it at the preview position. Double-click a floating title/header, close its window, or choose Dock back from its header menu to re-dock. Drag the visible dividers to resize the dock area, columns, or stacked panes; double-click a divider to reset its size. Floating panes resize from their borders and corners. Right-click a header for explicit positions and Reset pane layout.
   - **Hierarchy:** meshes, lights and splat clouds are all scene graph nodes.
   - **Editing:** click to select, use the gizmo to move, rotate or scale, and edit node properties in the Scene Hierarchy panel.
   - **Scene files:** scenes save to and load from versioned `.scene` JSON files. Older files are migrated on load.
@@ -18,7 +20,7 @@ Runs on Windows and Linux, and on Android (arm64) as a `NativeActivity`.
 ## Building & Running
 
 ```powershell
-make build              # MSVC on Windows, GCC on Linux
+make build CONFIG=RelWithDebInfo  # MSVC on Windows x64
 make build COMPILER=clang
 make run
 make package            # relocatable Release archive in dist/

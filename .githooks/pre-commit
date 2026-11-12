@@ -1,9 +1,13 @@
 #!/bin/sh
 # Pre-commit hook: auto-format staged C/C++ files with clang-format, re-stage them,
-# then verify formatting succeeded before allowing the commit.
+# then verify formatting succeeded before allowing the commit. Skip libs/.
 
 for file in $(git diff --cached --name-only | grep -E '\.(c|cpp|h|hpp)$')
 do
+  case "$file" in
+    libs/*) continue ;;
+  esac
+
   clang-format -i "$file"
   git add "$file"
   echo "clang-format: $file"

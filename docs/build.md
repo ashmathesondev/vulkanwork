@@ -1,5 +1,11 @@
 # Building the Project
 
+## Current BUI support
+
+The editor requires Windows x64 and the BUI 0.5.0 SDK in `libs/bui`.
+`make build CONFIG=RelWithDebInfo` matches the SDK configuration. See
+`BUILDING.md` for CRT/ABI details and platform limitations.
+
 ## Building
 
 Windows recipes run in PowerShell, Linux recipes in `/bin/sh`.

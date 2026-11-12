@@ -1,8 +1,6 @@
 #include "app.h"
 
-#include <ImGuiFileDialog.h>
-#include <imgui.h>
-#include <imgui_impl_vulkan.h>
+#include <BUI_kit.h>
 
 #include <algorithm>
 #include <cmath>
@@ -78,7 +76,7 @@ void App::init_vulkan()
 {
 	renderer.init(window, modelPath);
 	build_scene_graph();
-	init_imgui();
+	init_ui();
 
 	// Initialise Gaussian Splat system
 	splatSystem_.emplace();
@@ -104,157 +102,25 @@ void App::main_loop()
 
 		process_input();
 
-		// --- ImGui frame -----------------------------------------------------
-		ImGui_ImplVulkan_NewFrame();
-		platform::imgui_new_frame();
-		ImGui::NewFrame();
-
-		if (ImGui::BeginMainMenuBar())
+		debugWindow.draw(renderer, lights, selection, gizmo, sceneGraph);
+		if (newSceneRequested_)
 		{
-			if (ImGui::BeginMenu("File"))
-			{
-				if (ImGui::MenuItem("New Scene")) new_scene();
-				if (ImGui::MenuItem("Load Scene...")) showLoadDialog_ = true;
-				if (ImGui::MenuItem("Save Scene", "Ctrl+S"))
-				{
-					if (currentScenePath.empty())
-						showSaveDialog_ = true;
-					else
-						do_save_scene(currentScenePath);
-				}
-				if (ImGui::MenuItem("Save Scene As...")) showSaveDialog_ = true;
-				ImGui::Separator();
-				if (ImGui::MenuItem("Import Mesh...")) showImportDialog_ = true;
-				if (ImGui::MenuItem("Import Gaussian Splat (.ply)..."))
-					showSplatImportDialog_ = true;
-				ImGui::Separator();
-				if (ImGui::MenuItem("Exit")) platform::request_close(window);
-				ImGui::EndMenu();
-			}
-			ImGui::EndMainMenuBar();
+			newSceneRequested_ = false;
+			new_scene();
 		}
-
-		// Ctrl+S shortcut. Ignored while flying the camera: Ctrl (down) + S
-		// (back) is a normal movement combination there.
-		if (!mouseCaptured && ImGui::GetIO().KeyCtrl &&
-			ImGui::IsKeyPressed(ImGuiKey_S))
+		if (saveRequested_)
 		{
+			saveRequested_ = false;
 			if (currentScenePath.empty())
 				showSaveDialog_ = true;
 			else
 				do_save_scene(currentScenePath);
 		}
-
-		// Open file dialogs
-		if (showLoadDialog_)
-		{
-			IGFD::FileDialogConfig config;
-			config.path = scene_dialog_dir();
-			config.flags = ImGuiFileDialogFlags_Modal;
-			ImGuiFileDialog::Instance()->OpenDialog("LoadScene", "Load Scene",
-													".scene", config);
-			showLoadDialog_ = false;
-		}
-		if (showSaveDialog_)
-		{
-			IGFD::FileDialogConfig config;
-			config.path = scene_dialog_dir();
-			config.fileName = currentScenePath.empty()
-								  ? std::string("Untitled.scene")
-								  : std::filesystem::path(currentScenePath)
-										.filename()
-										.string();
-			config.flags = ImGuiFileDialogFlags_Modal |
-						   ImGuiFileDialogFlags_ConfirmOverwrite;
-			ImGuiFileDialog::Instance()->OpenDialog(
-				"SaveScene", "Save Scene As", ".scene", config);
-			showSaveDialog_ = false;
-		}
-		if (showImportDialog_)
-		{
-			IGFD::FileDialogConfig config;
-			config.path = ".";
-#ifdef __ANDROID__
-			const char* meshFilter = ".gltf,.glb";
-#else
-			const char* meshFilter = ".gltf,.glb,.fbx,.dae";
-#endif
-			ImGuiFileDialog::Instance()->OpenDialog("ImportMesh", "Import Mesh",
-													meshFilter, config);
-			showImportDialog_ = false;
-		}
-		if (showSplatImportDialog_)
-		{
-			IGFD::FileDialogConfig config;
-			std::error_code ec;
-			config.path = std::filesystem::is_directory("models/splats", ec)
-							  ? "models/splats"
-							  : ".";
-			config.flags = ImGuiFileDialogFlags_Modal;
-			ImGuiFileDialog::Instance()->OpenDialog(
-				"ImportSplat", "Import Gaussian Splat", ".ply", config);
-			showSplatImportDialog_ = false;
-		}
-
-		// Render file dialogs
-		const ImVec2 dialogMinSize(640.0f, 400.0f);
-		if (ImGuiFileDialog::Instance()->Display(
-				"LoadScene", ImGuiWindowFlags_NoCollapse, dialogMinSize))
-		{
-			if (ImGuiFileDialog::Instance()->IsOk())
-				do_load_scene(ImGuiFileDialog::Instance()->GetFilePathName());
-			ImGuiFileDialog::Instance()->Close();
-		}
-		if (ImGuiFileDialog::Instance()->Display(
-				"SaveScene", ImGuiWindowFlags_NoCollapse, dialogMinSize))
-		{
-			if (ImGuiFileDialog::Instance()->IsOk())
-				do_save_scene(ImGuiFileDialog::Instance()->GetFilePathName());
-			ImGuiFileDialog::Instance()->Close();
-		}
-		if (ImGuiFileDialog::Instance()->Display(
-				"ImportMesh", ImGuiWindowFlags_NoCollapse, dialogMinSize))
-		{
-			if (ImGuiFileDialog::Instance()->IsOk())
-				do_import_mesh(ImGuiFileDialog::Instance()->GetFilePathName());
-			ImGuiFileDialog::Instance()->Close();
-		}
-		if (ImGuiFileDialog::Instance()->Display(
-				"ImportSplat", ImGuiWindowFlags_NoCollapse, dialogMinSize))
-		{
-			if (ImGuiFileDialog::Instance()->IsOk())
-				do_import_splat(ImGuiFileDialog::Instance()->GetFilePathName());
-			ImGuiFileDialog::Instance()->Close();
-		}
-		if (ImGuiFileDialog::Instance()->Display(
-				"PickTexture", ImGuiWindowFlags_NoCollapse, dialogMinSize))
-		{
-			if (ImGuiFileDialog::Instance()->IsOk())
-				do_pick_texture(ImGuiFileDialog::Instance()->GetFilePathName());
-			ImGuiFileDialog::Instance()->Close();
-		}
-
-		gizmo.begin_frame();
-
-		// Deletes run before the inspector draws, because deleting frees
-		// textures that this frame's thumbnails would otherwise reference.
 		if (debugWindow.deleteRequested)
 		{
 			debugWindow.deleteRequested = false;
 			do_delete_selected();
 		}
-
-		// Delete key shortcut
-		if (!ImGui::GetIO().WantCaptureKeyboard &&
-			ImGui::IsKeyPressed(ImGuiKey_Delete) &&
-			selection.selectedNode.has_value())
-		{
-			do_delete_selected();
-		}
-
-		debugWindow.draw(renderer, lights, selection, gizmo, sceneGraph);
-
-		// Handle import/delete requests from debug window
 		if (debugWindow.importRequested)
 		{
 			debugWindow.importRequested = false;
@@ -265,63 +131,116 @@ void App::main_loop()
 			debugWindow.importSplatRequested = false;
 			showSplatImportDialog_ = true;
 		}
-		if (debugWindow.textureBrowseRequested.has_value())
+		auto dialog = [&](const char* title, int mode, const char* filter,
+						  const std::string& dir, const std::string& file,
+						  auto action)
+		{
+			char** paths = nullptr;
+			const char* filters[] = {filter};
+			int count = BK_file_dialog(title, mode, dir.c_str(), file.c_str(),
+									   filters, 1, 0, &paths);
+			if (count > 0 && paths && paths[0]) action(std::string(paths[0]));
+			BK_file_dialog_free(paths);
+			// A modal loop may have consumed the release of a viewport key.
+			gizmo.cancel();
+		};
+		if (showLoadDialog_)
+		{
+			showLoadDialog_ = false;
+			dialog("Load Scene", 0, "Scene\t*.scene", scene_dialog_dir(), "",
+				   [this](auto p) { do_load_scene(p); });
+		}
+		if (showSaveDialog_)
+		{
+			showSaveDialog_ = false;
+			dialog("Save Scene As", 1, "Scene\t*.scene", scene_dialog_dir(),
+				   currentScenePath.empty()
+					   ? "Untitled.scene"
+					   : std::filesystem::path(currentScenePath)
+							 .filename()
+							 .string(),
+				   [this](auto p)
+				   {
+					   if (std::filesystem::path(p).extension().empty())
+						   p += ".scene";
+					   do_save_scene(p);
+				   });
+		}
+		if (showImportDialog_)
+		{
+			showImportDialog_ = false;
+			dialog("Import Mesh", 0, "Meshes\t*.gltf *.glb *.fbx *.dae", ".",
+				   "", [this](auto p) { do_import_mesh(p); });
+		}
+		if (showSplatImportDialog_)
+		{
+			showSplatImportDialog_ = false;
+			dialog("Import Gaussian Splat", 0, "Gaussian splat\t*.ply", ".", "",
+				   [this](auto p) { do_import_splat(p); });
+		}
+		if (debugWindow.textureBrowseRequested)
 		{
 			textureTarget_ = *debugWindow.textureBrowseRequested;
 			debugWindow.textureBrowseRequested.reset();
 			debugWindow.textureError.clear();
-			IGFD::FileDialogConfig config;
-			config.path = ".";
-			config.flags = ImGuiFileDialogFlags_Modal;
-			ImGuiFileDialog::Instance()->OpenDialog(
-				"PickTexture", "Select Texture", ".png,.jpg,.jpeg,.tga,.bmp",
-				config);
+			dialog("Select Texture", 0,
+				   "Images\t*.png *.jpg *.jpeg *.tga *.bmp", ".", "",
+				   [this](auto p) { do_pick_texture(p); });
 		}
-		// --- Gizmo manipulation ------------------------------------------
-		if (selection.selectedNode.has_value())
+		gizmo.begin_frame();
+		double mx, my;
+		platform::cursor_pos(window, mx, my);
+		int ww, wh;
+		glfwGetWindowSize(window, &ww, &wh);
+		int fw, fh;
+		platform::framebuffer_size(window, fw, fh);
+		renderer.set_editor_width(
+			ww > 0 ? uint32_t(double(debugWindow.pane_width()) * fw / ww) : 0);
+		ww = std::max(1, ww - debugWindow.pane_width());
+		auto events = platform::take_pointer_events();
+		events.push_back(
+			{mx, my, platform::mouse_down(window, platform::MouseButton::Left),
+			 false});
+		for (const auto& event : events)
 		{
-			uint32_t nodeIdx = selection.selectedNode.value();
-			if (nodeIdx < sceneGraph.nodes.size())
+			gizmo.begin_frame();
+			bool inViewport =
+				event.x >= 0 && event.x < ww && event.y >= 0 && event.y < wh;
+			bool enabled = !mouseCaptured && !debugWindow.captures_keyboard() &&
+						   (inViewport || gizmo.is_using());
+			gizmo.input(glm::vec2(event.x, event.y), event.down, enabled);
+			// --- Gizmo manipulation ------------------------------------------
+			if (selection.selectedNode.has_value())
 			{
-				auto& node = sceneGraph.nodes[nodeIdx];
-				VkExtent2D ext = renderer.swapchain_extent();
-				// The gizmo works in world space, node transforms are relative
-				// to the parent.
-				glm::mat4 parentWorld{1.0f};
-				if (node.parent.has_value() &&
-					*node.parent < sceneGraph.nodes.size())
-					parentWorld = sceneGraph.nodes[*node.parent].worldTransform;
-				glm::mat4 world = parentWorld * node.localTransform;
-				bool changed = gizmo.manipulate(
-					renderer.last_view(), renderer.last_proj(), world, 0.0f,
-					0.0f, static_cast<float>(ext.width),
-					static_cast<float>(ext.height));
-				// A zero-scale parent has no inverse, and would write NaNs
-				if (changed && std::abs(glm::determinant(parentWorld)) >
-								   std::numeric_limits<float>::min())
-					node.localTransform = glm::inverse(parentWorld) * world;
+				uint32_t nodeIdx = selection.selectedNode.value();
+				if (nodeIdx < sceneGraph.nodes.size())
+				{
+					auto& node = sceneGraph.nodes[nodeIdx];
+					// The gizmo works in world space, node transforms are
+					// relative to the parent.
+					glm::mat4 parentWorld{1.0f};
+					if (node.parent.has_value() &&
+						*node.parent < sceneGraph.nodes.size())
+						parentWorld =
+							sceneGraph.nodes[*node.parent].worldTransform;
+					glm::mat4 world = parentWorld * node.localTransform;
+					bool changed = gizmo.manipulate(
+						renderer.last_view(), renderer.last_proj(), world, 0.0f,
+						0.0f, static_cast<float>(ww), static_cast<float>(wh));
+					// A zero-scale parent has no inverse, and would write NaNs
+					if (changed && std::abs(glm::determinant(parentWorld)) >
+									   std::numeric_limits<float>::min())
+						node.localTransform = glm::inverse(parentWorld) * world;
+				}
 			}
-		}
 
-		// --- Left-click picking ------------------------------------------
-		// Runs after the gizmo so a press on a handle is seen as gizmo input.
-		// IsMouseClicked is press-only, so drags that start on a panel and
-		// leave it never pick.
-		{
-			const ImGuiIO& io = ImGui::GetIO();
-			bool overGizmo =
-				selection.selectedNode.has_value() && gizmo.is_over();
-			if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-				!io.WantCaptureMouse && !mouseCaptured && !overGizmo &&
+			if (event.pressed && inViewport && enabled && !gizmo.is_over() &&
 				!gizmo.is_using())
-			{
-				selection.pick(io.MousePos.x, io.MousePos.y, io.DisplaySize.x,
-							   io.DisplaySize.y, renderer.last_view(),
+				selection.pick(float(event.x), float(event.y), float(ww),
+							   float(wh), renderer.last_view(),
 							   renderer.last_proj(), sceneGraph,
 							   renderer.meshes());
-			}
 		}
-
 		// --- Sync scene graph → mesh transforms and lights ---------------
 		sceneGraph.update_world_transforms();
 		sceneGraph.collect_lights(lights);
@@ -334,8 +253,6 @@ void App::main_loop()
 		}
 		sync_splats();
 
-		ImGui::Render();
-
 		// --- Draw ------------------------------------------------------------
 		renderer.update_shadows(camera, lights);
 		auto frame = renderer.begin_frame();
@@ -347,11 +264,8 @@ void App::main_loop()
 		if (selection.selectedNode.has_value() &&
 			*selection.selectedNode < sceneGraph.nodes.size())
 			selectedMesh = sceneGraph.nodes[*selection.selectedNode].meshIndex;
-		renderer.update_debug_lines(lights, selectedMesh);
+		renderer.update_debug_lines(lights, selectedMesh, gizmo.lines());
 		renderer.draw_scene(frame->cmd);
-
-		// ImGui draws into the same render pass
-		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame->cmd);
 
 		renderer.end_frame(*frame);
 	}
@@ -364,20 +278,19 @@ void App::main_loop()
 
 void App::process_input()
 {
-	ImGuiIO& io = ImGui::GetIO();
-
-	// Quit on an Escape *press* that ImGui is not using. Escape also cancels
+	// Quit on an Escape press in the viewport. Escape also cancels
 	// text edits and dialogs; reacting to the held key would quit on the
 	// frame after the edit closed.
 	bool escapeDown = platform::key_down(window, platform::Key::Escape);
-	if (escapeDown && !escapeWasDown && !io.WantCaptureKeyboard)
+	if (escapeDown && !escapeWasDown && !debugWindow.captures_keyboard())
 		platform::request_close(window);
 	escapeWasDown = escapeDown;
 
 	// --- Mouse look ----------------------------------------------------------
 	bool wantCapture =
 		platform::mouse_down(window, platform::MouseButton::Right) &&
-		!io.WantCaptureMouse;
+		(mouseCaptured ||
+		 (!debugWindow.captures_mouse() && !debugWindow.captures_keyboard()));
 	if (wantCapture && !mouseCaptured)
 	{
 		platform::set_mouse_capture(window, true);
@@ -424,7 +337,7 @@ void App::process_input()
 	}
 
 	// --- Keyboard movement ---------------------------------------------------
-	if (!io.WantCaptureKeyboard)
+	if (!debugWindow.captures_keyboard())
 	{
 		float v = camera.speed * deltaTime;
 		if (mouseCaptured)
@@ -575,6 +488,8 @@ std::string App::scene_dialog_dir() const
 
 void App::new_scene()
 {
+	debugWindow.invalidate();
+	gizmo.cancel();
 	renderer.unload_scene();
 	renderer.load_scene_empty();
 	sceneGraph.clear();
@@ -589,6 +504,8 @@ void App::new_scene()
 
 void App::do_pick_texture(const std::string& path)
 {
+	debugWindow.invalidate();
+	gizmo.cancel();
 	auto [matIdx, slot] = textureTarget_;
 	if (!renderer.set_material_texture(matIdx, slot, path))
 	{
@@ -641,6 +558,8 @@ void App::do_save_scene(const std::string& path)
 
 void App::do_load_scene(const std::string& path)
 {
+	debugWindow.invalidate();
+	gizmo.cancel();
 	LOG_INFO("Loading scene: %s", path.c_str());
 
 	SceneFileData data;
@@ -788,6 +707,8 @@ void App::do_load_scene(const std::string& path)
 
 void App::do_import_mesh(const std::string& path)
 {
+	debugWindow.invalidate();
+	gizmo.cancel();
 	LOG_INFO("Importing mesh: %s", path.c_str());
 	uint32_t prevMeshCount = static_cast<uint32_t>(renderer.meshes().size());
 	uint32_t prevNodeCount = static_cast<uint32_t>(sceneGraph.nodes.size());
@@ -833,6 +754,8 @@ bool App::upload_splat_cloud(SplatComponent& splat)
 
 void App::do_import_splat(const std::string& path)
 {
+	debugWindow.invalidate();
+	gizmo.cancel();
 	SplatComponent splat;
 	splat.path = path;
 	if (!upload_splat_cloud(splat)) return;
@@ -894,6 +817,8 @@ void App::sync_splats()
 
 void App::do_delete_selected()
 {
+	debugWindow.invalidate();
+	gizmo.cancel();
 	if (!selection.selectedNode.has_value()) return;
 	delete_node(selection.selectedNode.value());
 }
@@ -956,45 +881,17 @@ void App::delete_node(uint32_t nodeIdx)
 }
 
 // =============================================================================
-// ImGui
+// BUI editor
 // =============================================================================
 
-void App::init_imgui()
+void App::init_ui()
 {
-	VkDescriptorPoolSize poolSizes[] = {
-		{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		 10 + Renderer::MAX_TEXTURE_THUMBNAILS},
-	};
-	VkDescriptorPoolCreateInfo poolCI{
-		VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-	poolCI.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-	poolCI.maxSets = 10 + Renderer::MAX_TEXTURE_THUMBNAILS;
-	poolCI.poolSizeCount = 1;
-	poolCI.pPoolSizes = poolSizes;
-	VK_CHECK(vkCreateDescriptorPool(renderer.vk_device(), &poolCI, nullptr,
-									&imguiPool));
-
-	IMGUI_CHECKVERSION();
-	ImGui::CreateContext();
-	ImGui::StyleColorsDark();
-
-	platform::imgui_init(window);
-
-	ImGui_ImplVulkan_InitInfo initInfo{};
-	initInfo.Instance = renderer.vk_instance();
-	initInfo.PhysicalDevice = renderer.vk_physical_device();
-	initInfo.Device = renderer.vk_device();
-	initInfo.QueueFamily = renderer.vk_graphics_family();
-	initInfo.Queue = renderer.vk_graphics_queue();
-	initInfo.DescriptorPool = imguiPool;
-	initInfo.MinImageCount = 2;
-	initInfo.ImageCount = renderer.swapchain_image_count();
-	initInfo.ApiVersion = VK_API_VERSION_1_1;
-	initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-	initInfo.PipelineInfoMain.RenderPass = renderer.vk_render_pass();
-	initInfo.PipelineInfoMain.Subpass = 0;
-
-	ImGui_ImplVulkan_Init(&initInfo);
+	debugWindow.init(window);
+	debugWindow.newScene = [this] { newSceneRequested_ = true; };
+	debugWindow.loadScene = [this] { showLoadDialog_ = true; };
+	debugWindow.saveScene = [this] { saveRequested_ = true; };
+	debugWindow.saveAs = [this] { showSaveDialog_ = true; };
+	debugWindow.exit = [this] { platform::request_close(window); };
 }
 
 // =============================================================================
@@ -1005,11 +902,7 @@ void App::cleanup()
 {
 	save_window_config();
 
-	renderer.release_texture_thumbnails();
-	ImGui_ImplVulkan_Shutdown();
-	platform::imgui_shutdown();
-	ImGui::DestroyContext();
-	vkDestroyDescriptorPool(renderer.vk_device(), imguiPool, nullptr);
+	debugWindow.cleanup();
 
 	if (splatSystem_) splatSystem_->cleanup();
 

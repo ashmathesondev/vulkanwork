@@ -1,6 +1,8 @@
 #pragma once
-
 #include <glm/glm.hpp>
+#include <vector>
+
+#include "graphics/debugLines.h"
 
 struct Gizmo
 {
@@ -15,21 +17,26 @@ struct Gizmo
 		World,
 		Local
 	};
-
 	Op operation = Op::Translate;
 	Space space = Space::World;
 	bool useSnap = false;
-	float snapTranslate = 0.5f;
-	float snapRotate = 15.0f;
-	float snapScale = 0.1f;
-
+	float snapTranslate = .5f, snapRotate = 15.f, snapScale = .1f;
 	void begin_frame();
+	void input(glm::vec2 mouse, bool down, bool enabled);
+	void cancel();
+	bool manipulate(const glm::mat4&, const glm::mat4&, glm::mat4&, float,
+					float, float, float);
+	bool is_using() const { return active_ >= 0; }
+	bool is_over() const { return hover_ >= 0; }
+	const std::vector<LineVertex>& lines() const { return lines_; }
 
-	bool manipulate(const glm::mat4& view, const glm::mat4& proj,
-					glm::mat4& objectMatrix, float viewportX, float viewportY,
-					float viewportW, float viewportH);
-
-	bool is_using() const;
-	// Only meaningful after manipulate() ran this frame.
-	bool is_over() const;
+   private:
+	glm::vec2 mouse_{}, press_{}, screenAxis_{};
+	glm::vec3 axis_{};
+	glm::mat4 start_{1};
+	bool down_ = false, wasDown_ = false, enabled_ = false;
+	int active_ = -1, hover_ = -1;
+	float length_ = 1;
+	Op dragOp_ = Op::Translate;
+	std::vector<LineVertex> lines_;
 };

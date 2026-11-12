@@ -21,7 +21,6 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #define STB_IMAGE_IMPLEMENTATION
-#include <imgui_impl_vulkan.h>
 #include <stb_image.h>
 
 #include <algorithm>
@@ -248,6 +247,7 @@ void Renderer::cleanup()
 	vkDestroyPipeline(device_, heatmapPipeline_, nullptr);
 	vkDestroyPipelineLayout(device_, heatmapPipelineLayout_, nullptr);
 	vkDestroyPipeline(device_, debugLinePipeline_, nullptr);
+	vkDestroyPipeline(device_, gizmoPipeline_, nullptr);
 	vkDestroyPipelineLayout(device_, debugLinePipelineLayout_, nullptr);
 
 	// Render passes
@@ -386,7 +386,7 @@ std::optional<Renderer::FrameContext> Renderer::begin_frame()
 	// ---- 4b. Gaussian splat compute (preprocess + radix sort) ----
 	if (splatSystem_ && splatSystem_->has_splats())
 	{
-		splatSystem_->dispatch_compute(cmd, currentFrame_, swapchainExtent_,
+		splatSystem_->dispatch_compute(cmd, currentFrame_, viewport_extent(),
 									   frameDescriptorSets_[currentFrame_]);
 	}
 
@@ -406,13 +406,13 @@ std::optional<Renderer::FrameContext> Renderer::begin_frame()
 
 	VkViewport vp{0,
 				  0,
-				  static_cast<float>(swapchainExtent_.width),
+				  static_cast<float>(viewport_extent().width),
 				  static_cast<float>(swapchainExtent_.height),
 				  0.0f,
 				  1.0f};
 	vkCmdSetViewport(cmd, 0, 1, &vp);
 
-	VkRect2D scissor{{0, 0}, swapchainExtent_};
+	VkRect2D scissor{{0, 0}, viewport_extent()};
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 
 	return FrameContext{cmd, imageIndex};
@@ -424,13 +424,14 @@ void Renderer::update_uniforms(const Camera& camera, float time,
 	FrameUBO ubo{};
 	ubo.view = camera.view_matrix();
 
-	float aspect = static_cast<float>(swapchainExtent_.width) /
+	float aspect = static_cast<float>(viewport_extent().width) /
 				   static_cast<float>(swapchainExtent_.height);
 	ubo.proj = glm::perspective(glm::radians(camera.fov), aspect, CAMERA_NEAR,
 								CAMERA_FAR);
 	ubo.proj[1][1] *= -1.0f;  // Vulkan Y-flip
 
-	// Cache for picking / gizmo (store un-flipped proj for ImGuizmo)
+	// Cache for picking / gizmo (store un-flipped proj for the transform
+	// handles)
 	lastView_ = ubo.view;
 	lastProj_ = glm::perspective(glm::radians(camera.fov), aspect, CAMERA_NEAR,
 								 CAMERA_FAR);
@@ -441,7 +442,7 @@ void Renderer::update_uniforms(const Camera& camera, float time,
 	ubo.ambientColor = lights.ambient.color * lights.ambient.intensity;
 	ubo.tileCountX = tileCountX_;
 	ubo.tileCountY = tileCountY_;
-	ubo.screenWidth = swapchainExtent_.width;
+	ubo.screenWidth = viewport_extent().width;
 	ubo.screenHeight = swapchainExtent_.height;
 	ubo.tileCullingOff = debugSkipDepthPrepass_ ? 1u : 0u;
 	std::copy(shadowMatrices_.begin(), shadowMatrices_.end(),
@@ -558,12 +559,24 @@ void Renderer::draw_scene(VkCommandBuffer cmd)
 		VkBuffer vbufs[] = {debugLineVertexBuffers_[currentFrame_]};
 		VkDeviceSize offs[] = {0};
 		vkCmdBindVertexBuffers(cmd, 0, 1, vbufs, offs);
-		vkCmdDraw(cmd, debugLineVertexCount_, 1, 0, 0);
+		vkCmdDraw(cmd, debugLineVertexCount_ - gizmoVertexCount_, 1,
+				  gizmoVertexCount_, 0);
 	}
 
 	// ---- Gaussian splat draw (alpha-blended, after all opaque geometry) ----
 	if (splatSystem_ && splatSystem_->has_splats())
 		splatSystem_->record_draw(cmd, currentFrame_);
+	if (gizmoVertexCount_)
+	{
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gizmoPipeline_);
+		vkCmdBindDescriptorSets(
+			cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, debugLinePipelineLayout_, 0,
+			1, &frameDescriptorSets_[currentFrame_], 0, nullptr);
+		VkDeviceSize offset = 0;
+		vkCmdBindVertexBuffers(
+			cmd, 0, 1, &debugLineVertexBuffers_[currentFrame_], &offset);
+		vkCmdDraw(cmd, gizmoVertexCount_, 1, 0, 0);
+	}
 }
 
 void Renderer::end_frame(const FrameContext& ctx)
@@ -2497,13 +2510,13 @@ void Renderer::draw_depth_prepass(VkCommandBuffer cmd)
 
 	VkViewport vp{0,
 				  0,
-				  static_cast<float>(swapchainExtent_.width),
+				  static_cast<float>(viewport_extent().width),
 				  static_cast<float>(swapchainExtent_.height),
 				  0.0f,
 				  1.0f};
 	vkCmdSetViewport(cmd, 0, 1, &vp);
 
-	VkRect2D scissor{{0, 0}, swapchainExtent_};
+	VkRect2D scissor{{0, 0}, viewport_extent()};
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2979,7 +2992,7 @@ void Renderer::update_shadows(const Camera& camera,
 	std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b)
 					 { return score(a) > score(b); });
 
-	const float aspect = static_cast<float>(swapchainExtent_.width) /
+	const float aspect = static_cast<float>(viewport_extent().width) /
 						 static_cast<float>(swapchainExtent_.height);
 	const glm::mat4 cameraViewProj =
 		glm::perspectiveRH_ZO(glm::radians(camera.fov), aspect, CAMERA_NEAR,
@@ -3534,6 +3547,9 @@ void Renderer::create_debug_line_pipeline()
 
 	VK_CHECK(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr,
 									   &debugLinePipeline_));
+	ds.depthTestEnable = VK_FALSE;
+	VK_CHECK(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr,
+									   &gizmoPipeline_));
 
 	vkDestroyShaderModule(device_, fragMod, nullptr);
 	vkDestroyShaderModule(device_, vertMod, nullptr);
@@ -3555,9 +3571,11 @@ void Renderer::create_debug_line_buffers()
 }
 
 void Renderer::update_debug_lines(const LightEnvironment& lights,
-								  std::optional<uint32_t> selectedMesh)
+								  std::optional<uint32_t> selectedMesh,
+								  const std::vector<LineVertex>& handles)
 {
-	std::vector<LineVertex> verts;
+	std::vector<LineVertex> verts = handles;
+	gizmoVertexCount_ = static_cast<uint32_t>(handles.size());
 	// Bounds go first so a full buffer truncates light wireframes instead
 	if (showSelectionBounds_ && selectedMesh.has_value() &&
 		*selectedMesh < meshes_.size() &&
@@ -3602,37 +3620,8 @@ void Renderer::update_debug_lines(const LightEnvironment& lights,
 // Cleanup helpers
 // =============================================================================
 
-VkDescriptorSet Renderer::texture_thumbnail(int32_t textureIdx)
-{
-	if (textureIdx < 0 || textureIdx >= static_cast<int32_t>(textures_.size()))
-		return VK_NULL_HANDLE;
-
-	Texture& tex = textures_[textureIdx];
-	if (!tex.thumbnail && thumbnailCount_ < MAX_TEXTURE_THUMBNAILS)
-	{
-		tex.thumbnail = ImGui_ImplVulkan_AddTexture(
-			pbrSampler_, tex.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-		++thumbnailCount_;
-	}
-	return tex.thumbnail;
-}
-
-void Renderer::release_thumbnail(Texture& tex)
-{
-	if (!tex.thumbnail) return;
-	ImGui_ImplVulkan_RemoveTexture(tex.thumbnail);
-	tex.thumbnail = VK_NULL_HANDLE;
-	--thumbnailCount_;
-}
-
-void Renderer::release_texture_thumbnails()
-{
-	for (auto& t : textures_) release_thumbnail(t);
-}
-
 void Renderer::destroy_texture(Texture& tex)
 {
-	release_thumbnail(tex);
 	if (tex.view) vkDestroyImageView(device_, tex.view, nullptr);
 	if (tex.image) vkDestroyImage(device_, tex.image, nullptr);
 	if (tex.memory) vkFreeMemory(device_, tex.memory, nullptr);

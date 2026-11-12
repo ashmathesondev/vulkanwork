@@ -9,6 +9,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Enable for relocatable install/package builds.
 option(VW_PORTABLE "Load assets relative to the executable" OFF)
 
+# Match the packaged BUI SDK's release CRT and STL ABI for all local targets.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
+    add_compile_definitions(_ITERATOR_DEBUG_LEVEL=0 NOMINMAX)
+endif()
+
 # --- Packages ----------------------------------------------------------------
 find_package(Vulkan REQUIRED)
 if(NOT ANDROID)
@@ -16,11 +22,20 @@ if(NOT ANDROID)
     find_package(assimp CONFIG REQUIRED)
 endif()
 find_package(glm CONFIG REQUIRED)
-find_package(imgui CONFIG REQUIRED)
+# The bundled SDK is built for the Windows x64 release CRT.
+find_package(BUI CONFIG REQUIRED PATHS "${CMAKE_SOURCE_DIR}/libs/bui" NO_DEFAULT_PATH)
+foreach(component core gpu kit)
+    set_target_properties(bui::${component} PROPERTIES
+        MAP_IMPORTED_CONFIG_DEBUG RelWithDebInfo
+        MAP_IMPORTED_CONFIG_RELEASE RelWithDebInfo
+        MAP_IMPORTED_CONFIG_MINSIZEREL RelWithDebInfo)
+endforeach()
+if(NOT WIN32 OR ANDROID)
+    message(FATAL_ERROR "The embedded BUI host currently requires Windows and a Windows x64 BUI SDK")
+endif()
 find_path(Stb_INCLUDE_DIR "stb_image.h")
 find_package(lz4 CONFIG REQUIRED)
 find_path(TINYGLTF_INCLUDE_DIRS "tiny_gltf.h")
-find_package(imguizmo CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 
 # --- Shader compilation ------------------------------------------------------
@@ -115,7 +130,6 @@ target_include_directories(vulkanwork PRIVATE
     ${CMAKE_BINARY_DIR}/generated
     ${Stb_INCLUDE_DIR}
     ${TINYGLTF_INCLUDE_DIRS}
-    ${CMAKE_SOURCE_DIR}/src/vendor/ImGuiFileDialog
 )
 
 if(ANDROID)
@@ -128,11 +142,11 @@ endif()
 target_link_libraries(vulkanwork PRIVATE
     Vulkan::Vulkan
     glm::glm
-    imgui::imgui
-    imguizmo::imguizmo
+    bui::kit
     nlohmann_json::nlohmann_json
     packfile
 )
+
 
 if(NOT ANDROID)
     target_link_libraries(vulkanwork PRIVATE glfw assimp::assimp)
@@ -221,6 +235,8 @@ if(NOT ANDROID)
     endif()
 
     install(TARGETS vulkanwork RUNTIME DESTINATION .)
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/libs/bui/share/licenses/BUI/"
+            DESTINATION licenses/BUI)
     if(WIN32)
         # TARGET_RUNTIME_DLLS omits dependencies of dependencies (assimp's
         # minizip, pugixml and others). vcpkg copies the full set beside the exe.

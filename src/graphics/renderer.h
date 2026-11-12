@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "debugLines.h"
 #include "light.h"
 #include "material.h"
 #include "mesh.h"
@@ -55,16 +56,25 @@ struct Renderer
 	void update_uniforms(const Camera& camera, float time,
 						 const LightEnvironment& lights);
 	void update_debug_lines(const LightEnvironment& lights,
-							std::optional<uint32_t> selectedMesh);
+							std::optional<uint32_t> selectedMesh,
+							const std::vector<LineVertex>& handles = {});
 	void draw_scene(VkCommandBuffer cmd);
 	void end_frame(const FrameContext& ctx);
 
 	// Swapchain
 	void notify_resize();
 
-	// Accessors for App/ImGui
+	// Accessors for App/editor
 	const char* gpu_name() const;
 	VkExtent2D swapchain_extent() const;
+	void set_editor_width(uint32_t width) { editorWidth_ = width; }
+	VkExtent2D viewport_extent() const
+	{
+		return {swapchainExtent_.width > editorWidth_
+					? swapchainExtent_.width - editorWidth_
+					: 1,
+				swapchainExtent_.height};
+	}
 	VkInstance vk_instance() const;
 	VkPhysicalDevice vk_physical_device() const;
 	VkDevice vk_device() const;
@@ -79,14 +89,14 @@ struct Renderer
 	VkDescriptorSetLayout frame_set_layout() const { return frameSetLayout_; }
 	pak::PackFile& pack_file() { return *packFile_; }
 
-	// Heatmap toggle (controlled from ImGui)
+	// Heatmap toggle (controlled from the editor)
 	bool showHeatmap_ = false;
 
-	// Debug line visualization toggle (controlled from ImGui)
+	// Debug line visualization toggle (controlled from the editor)
 	bool showDebugLines_ = true;
 	bool showSelectionBounds_ = true;
 
-	// Debug toggles (controlled from ImGui)
+	// Debug toggles (controlled from the editor)
 	bool debugSkipDepthPrepass_ = false;
 	bool debugDisableCulling_ = false;
 	int debugFrontFace_ = 0;  // 0=CCW, 1=CW
@@ -96,11 +106,6 @@ struct Renderer
 	std::vector<Mesh>& meshes() { return meshes_; }
 	std::vector<Material>& materials() { return materials_; }
 	const std::vector<Texture>& textures() const { return textures_; }
-	// ImGui preview of a texture, or null for no texture or a full pool.
-	static constexpr uint32_t MAX_TEXTURE_THUMBNAILS = 1024;
-	VkDescriptorSet texture_thumbnail(int32_t textureIdx);
-	// Must run before the ImGui Vulkan backend shuts down.
-	void release_texture_thumbnails();
 	// Pushes the material's edited parameters to the GPU.
 	void update_material(uint32_t materialIdx);
 	// Points a material's map at an image file. An empty path removes the map.
@@ -223,11 +228,13 @@ struct Renderer
 
 	// Debug line visualization
 	VkPipelineLayout debugLinePipelineLayout_ = VK_NULL_HANDLE;
+	VkPipeline gizmoPipeline_ = VK_NULL_HANDLE;
 	VkPipeline debugLinePipeline_ = VK_NULL_HANDLE;
 	VkBuffer debugLineVertexBuffers_[MAX_FRAMES_IN_FLIGHT] = {};
 	VkDeviceMemory debugLineVertexMemory_[MAX_FRAMES_IN_FLIGHT] = {};
 	void* debugLineVertexMapped_[MAX_FRAMES_IN_FLIGHT] = {};
 	uint32_t debugLineVertexCount_ = 0;
+	uint32_t gizmoVertexCount_ = 0, editorWidth_ = 0;
 
 	// Light / tile SSBOs (per frame-in-flight)
 	std::vector<VkBuffer> lightSSBOs_;
@@ -387,7 +394,5 @@ struct Renderer
 	VkFormat find_depth_format();
 	VkShaderModule create_shader_module(const std::vector<char>& code);
 	void destroy_texture(Texture& tex);
-	void release_thumbnail(Texture& tex);
-	uint32_t thumbnailCount_ = 0;
 	void cleanup_light_buffers();
 };

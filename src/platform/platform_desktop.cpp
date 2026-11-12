@@ -4,7 +4,6 @@
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
-#include <imgui_impl_glfw.h>
 
 #include <cstdlib>
 #include <filesystem>
@@ -31,6 +30,7 @@ namespace
 {
 void* resizeUser = nullptr;
 void (*resizeCallback)(void*) = nullptr;
+std::vector<PointerEvent> pointerEvents;
 
 #if VW_PORTABLE
 std::filesystem::path executable_dir()
@@ -109,7 +109,33 @@ PlatformWindow* create_window(int width, int height, const char* title)
 {
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 	glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-	return glfwCreateWindow(width, height, title, nullptr, nullptr);
+	auto* window = glfwCreateWindow(width, height, title, nullptr, nullptr);
+	if (window)
+	{
+		// The native BUI child can retain keyboard focus while the top-level
+		// window stays active. Return focus when the viewport is pressed.
+		glfwSetMouseButtonCallback(
+			window,
+			[](GLFWwindow* w, int button, int action, int)
+			{
+				if (action == GLFW_PRESS) glfwFocusWindow(w);
+				if (button == GLFW_MOUSE_BUTTON_LEFT)
+				{
+					double x, y;
+					glfwGetCursorPos(w, &x, &y);
+					pointerEvents.push_back(
+						{x, y, action == GLFW_PRESS, action == GLFW_PRESS});
+				}
+			});
+		glfwSetCursorPosCallback(
+			window,
+			[](GLFWwindow* w, double x, double y)
+			{
+				if (glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
+					pointerEvents.push_back({x, y, true, false});
+			});
+	}
+	return window;
 }
 
 void destroy_window(PlatformWindow* window) { glfwDestroyWindow(window); }
@@ -182,14 +208,6 @@ void set_mouse_capture(PlatformWindow* window, bool captured)
 					 captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
 }
 
-void imgui_init(PlatformWindow* window)
-{
-	ImGui_ImplGlfw_InitForVulkan(window, true);
-}
-
-void imgui_new_frame() { ImGui_ImplGlfw_NewFrame(); }
-void imgui_shutdown() { ImGui_ImplGlfw_Shutdown(); }
-
 #if VW_PORTABLE
 std::string config_dir() { return base_dir().string(); }
 std::string pak_file_path() { return (base_dir() / "assets.pak").string(); }
@@ -205,6 +223,12 @@ std::string model_path(const char* name)
 	return (std::filesystem::path(MODEL_DIR) / name).string();
 }
 #endif
+std::vector<PointerEvent> take_pointer_events()
+{
+	auto events = std::move(pointerEvents);
+	pointerEvents.clear();
+	return events;
+}
 void prepare_android_assets() {}
 
 }  // namespace platform

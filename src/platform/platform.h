@@ -65,10 +65,13 @@ bool key_down(PlatformWindow* window, Key key);
 bool mouse_down(PlatformWindow* window, MouseButton button);
 void cursor_pos(PlatformWindow* window, double& x, double& y);
 void set_mouse_capture(PlatformWindow* window, bool captured);
-
-void imgui_init(PlatformWindow* window);
-void imgui_new_frame();
-void imgui_shutdown();
+struct PointerEvent
+{
+	double x, y;
+	bool down, pressed;
+};
+// Keep clicks and drags that complete between rendered frames.
+std::vector<PointerEvent> take_pointer_events();
 
 std::string config_dir();
 std::string pak_file_path();

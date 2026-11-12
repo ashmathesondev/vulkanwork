@@ -1,5 +1,19 @@
 # Building vulkanwork
 
+## BUI editor platform and SDK
+
+The editor uses the BUI 0.5.0 Windows x64 static SDK in `libs/bui` through `bui::kit`.
+Use MSVC 19.51 or a compatible Windows compiler; RelWithDebInfo is the SDK's native
+configuration. CMake maps the other configurations to those libraries and uses
+`/MD` and `_ITERATOR_DEBUG_LEVEL=0` consistently for local targets, including Debug.
+ImGui and ImGuizmo are no longer vcpkg dependencies.
+
+The Scene/Object, Material, and Options panes each keep their own BUI context, header and scrollbar. Drag headers to float native resizable windows or dock into either right-hand column. The header context menu offers explicit docking positions and a layout reset; closing a floating pane re-docks it. Pane moves preserve the existing BUI tree and scroll position. Six-pixel native splitter grips resize the dock width, column widths and adjacent pane heights; double-click resets a split. Floating panes use the standard Windows resize borders. BUI owns its input, text editing,
+clipboard and scrolling; the Vulkan viewport occupies the remaining client area.
+File dialogs use BUI's native file browser. Linux and Android recipes below describe
+the earlier renderer build; the current embedded host requires Windows. Supporting
+those platforms requires both a matching BUI SDK and a native host implementation.
+
 ## Prerequisites
 
 - [CMake](https://cmake.org/) 3.21+
@@ -27,7 +41,7 @@ make run
 
 ## What the Build Does
 
-1. Installs dependencies via vcpkg (Vulkan, GLFW, GLM, Dear ImGui, stb, LZ4)
+1. Installs dependencies via vcpkg (Vulkan, GLFW, GLM, stb, LZ4)
 2. Configures the CMake project
 3. Compiles shaders to SPIR-V
 4. Packs shaders and textures into `assets.pak` (LZ4-compressed)

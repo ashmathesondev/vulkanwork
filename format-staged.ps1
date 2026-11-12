@@ -1,4 +1,4 @@
-# Run clang-format on all staged C/C++ files, re-stage them, and optionally commit.
+# Run clang-format on staged C/C++ files outside libs/, re-stage them, and optionally commit.
 # Usage:
 #   .\format-staged.ps1                   # format and re-stage only
 #   .\format-staged.ps1 "commit message"  # format, re-stage, and commit
@@ -12,7 +12,7 @@ $extensions = @('.c', '.cpp', '.h', '.hpp')
 
 $staged = git diff --cached --name-only | Where-Object {
     $ext = [System.IO.Path]::GetExtension($_)
-    $extensions -contains $ext
+    $_ -notmatch '^libs[/\\]' -and $extensions -contains $ext
 }
 
 if (-not $staged) {

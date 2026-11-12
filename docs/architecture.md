@@ -6,7 +6,7 @@ This document describes the architecture of the Vulkan renderer.
 
 Layered structure: `main.cpp` → `App` → `Renderer` → graphics subsystems.
 
-**App** (`src/app.h/cpp`): owns GLFW window, ImGui lifecycle, input dispatch, main loop. Calls `renderer.begin_frame()` / `renderer.end_frame()` each tick; resize handling uses `begin_frame()` return value.
+**App** (`src/app.h/cpp`): owns GLFW window, BUI editor lifecycle, input dispatch, main loop. Calls `renderer.begin_frame()` / `renderer.end_frame()` each tick; resize handling uses `begin_frame()` return value.
 
 **Renderer** (`src/graphics/renderer.h/cpp`, ~2800 lines): all Vulkan state. Systematic `create_*` functions for each Vulkan object. Helper utilities: `find_memory_type`, `create_buffer`, `begin_single_time_commands`. MAX_FRAMES_IN_FLIGHT = 2.
 
@@ -17,7 +17,7 @@ Layered structure: `main.cpp` → `App` → `Renderer` → graphics subsystems.
 
 **Shadows:** every mesh in `Renderer::meshes_` casts and receives. `update_shadows()` picks casters before `begin_frame()`: directional lights first, then the strongest point and spot lights at the camera whose radius sphere touches the camera frustum, up to `MAX_SHADOW_CASTERS` and `MAX_SHADOW_LAYERS` (a point light takes six layers, others one). Other lights stay unshadowed. `FrameUBO::shadowMatrices` holds one matrix per layer, and `GPULight::coneParams.zw` holds the first layer and texel size. Layers are cached across frames: a layer is redrawn only when its matrix changes, a mesh moves inside its view, or the mesh list changes. Gaussian splats neither cast nor receive.
 
-**Scene system** (`src/editor/`): SceneGraph owns hierarchy (imported models keep their glTF node tree; mesh, light and splat nodes; lights are collected from node transforms each frame); SceneFile serializes/deserializes `.scene` files; Selection and Gizmo (ImGuizmo) handle editor interaction. Global mesh index tracked in `Renderer::meshes_` vector; each Mesh stores `sourcePath`/`sourceMeshIndex` for multi-model scenes.
+**Scene system** (`src/editor/`): SceneGraph owns hierarchy (imported models keep their glTF node tree; mesh, light and splat nodes; lights are collected from node transforms each frame); SceneFile serializes/deserializes `.scene` files; Selection and Gizmo handle viewport picking and axis manipulation. DebugWindow owns three retained BUI trees in dockable Win32 panes (Scene/Object, Material, and Options). A native window subclass handles header dragging, floating resize frames, drop previews and docking order in two columns; reparenting preserves each tree and its scroll state; native file dialogs also use BUI. BUI input callbacks defer structural actions until the next application tick. `editorMenu.cpp` attaches the native application menu, routes commands through the same queue, updates checkmarks from live editor state, and handles shortcuts in both the viewport and pane windows. File and Add actions live in the menu instead of the Scene pane. The renderer reserves the pane width when computing its viewport, camera projection and light culling, and draws gizmo lines with a separate pipeline that disables depth testing. Global mesh index tracked in `Renderer::meshes_` vector; each Mesh stores `sourcePath`/`sourceMeshIndex` for multi-model scenes.
 
 **Asset pipeline:**
 1. GLSL shaders compiled to SPIR-V via glslc (CMake custom targets)

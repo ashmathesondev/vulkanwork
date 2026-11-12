@@ -89,8 +89,7 @@ void main()
     if (pixelCoord.x < int(frame.screenWidth) &&
         pixelCoord.y < int(frame.screenHeight))
     {
-        vec2 uv = (vec2(pixelCoord) + 0.5) / vec2(frame.screenWidth, frame.screenHeight);
-        depth = texture(depthTexture, uv).r;
+        depth = texelFetch(depthTexture, pixelCoord, 0).r;
     }
 
     // Convert to uint for atomic min/max

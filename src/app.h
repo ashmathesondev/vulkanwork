@@ -29,9 +29,6 @@ struct App
 	// Scene graph
 	SceneGraph sceneGraph;
 
-	// ImGui
-	VkDescriptorPool imguiPool = VK_NULL_HANDLE;
-
 	// Debug UI
 	DebugWindow debugWindow;
 
@@ -43,6 +40,7 @@ struct App
 	Gizmo gizmo;
 
 	// State
+	bool newSceneRequested_ = false, saveRequested_ = false;
 	bool mouseCaptured = false;
 	bool escapeWasDown = false;
 	bool firstMouse = true;
@@ -72,7 +70,7 @@ struct App
 	void init_vulkan();
 	void main_loop();
 	void cleanup();
-	void init_imgui();
+	void init_ui();
 	void process_input();
 	void build_scene_graph();
 	std::vector<uint32_t> add_imported_hierarchy(

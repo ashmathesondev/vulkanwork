@@ -9,10 +9,9 @@
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
 #include <android_native_app_glue.h>
-#include <imgui.h>
-#include <imgui_impl_android.h>
 #include <vulkan/vulkan.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -64,7 +63,6 @@ void copy_asset(const char* assetName, const std::filesystem::path& outPath)
 
 int32_t handle_input(android_app*, AInputEvent* event)
 {
-	ImGui_ImplAndroid_HandleInputEvent(event);
 	if (AInputEvent_getType(event) != AINPUT_EVENT_TYPE_MOTION) return 0;
 
 	int32_t action = AMotionEvent_getAction(event);
@@ -149,7 +147,12 @@ void wait_events()
 	if (source) source->process(app, source);
 }
 
-double time_seconds() { return static_cast<double>(ImGui::GetTime()); }
+double time_seconds()
+{
+	return std::chrono::duration<double>(
+			   std::chrono::steady_clock::now().time_since_epoch())
+		.count();
+}
 
 void framebuffer_size(PlatformWindow* window, int& width, int& height)
 {
@@ -189,10 +192,7 @@ void cursor_pos(PlatformWindow*, double& x, double& y)
 	y = cursorY;
 }
 void set_mouse_capture(PlatformWindow*, bool) {}
-
-void imgui_init(PlatformWindow* window) { ImGui_ImplAndroid_Init(window); }
-void imgui_new_frame() { ImGui_ImplAndroid_NewFrame(); }
-void imgui_shutdown() { ImGui_ImplAndroid_Shutdown(); }
+std::vector<PointerEvent> take_pointer_events() { return {}; }
 
 std::string config_dir()
 {

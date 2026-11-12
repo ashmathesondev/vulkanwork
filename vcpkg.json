@@ -16,20 +16,9 @@
       "platform": "!android"
     },
     "glm",
-    {
-      "name": "imgui",
-      "features": ["glfw-binding", "vulkan-binding"],
-      "platform": "!android"
-    },
-    {
-      "name": "imgui",
-      "features": ["android-binding", "vulkan-binding"],
-      "platform": "android"
-    },
     "stb",
     "lz4",
     "tinygltf",
-    "imguizmo",
     "nlohmann-json"
   ]
 }
